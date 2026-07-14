@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.kungfuchess</groupId>
+  <artifactId>kung-fu-chess</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <!--
+    This file exists ONLY so the test suite in src/test can be run locally in an IDE
+    (IntelliJ, Eclipse, `mvn test`, etc). It is NOT part of the application source and
+    must NOT be uploaded to the course's grading platform, which compiles
+    src/main/java/com directly with plain javac and has no JUnit on its classpath.
+
+    Deliberately uses Maven's standard, zero-config directory layout
+    (src/main/java, src/test/java, src/test/resources) rather than custom
+    <sourceDirectory>/<testSourceDirectory> overrides: some IDEs' Java language
+    servers resolve dependencies/imports for custom source roots less reliably than
+    for the conventional ones.
+  -->
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>

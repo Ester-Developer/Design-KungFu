@@ -4,6 +4,8 @@ import com.kungfuchess.model.Board;
 import com.kungfuchess.engine.GameEngine;
 import com.kungfuchess.model.Piece;
 import com.kungfuchess.model.Position;
+import com.kungfuchess.view.Renderer;
+import com.kungfuchess.view.SoundManager;
 
 import java.util.Optional;
 
@@ -33,9 +35,21 @@ public final class Controller {
 
     private final GameEngine gameEngine;
     private Position selected;
+    private Renderer renderer;
+    private SoundManager soundManager;
 
     public Controller(GameEngine gameEngine) {
         this.gameEngine = gameEngine;
+    }
+
+    /** Optional: wire a renderer to be refreshed after every move attempt. */
+    public void setRenderer(Renderer renderer) {
+        this.renderer = renderer;
+    }
+
+    /** Optional: wire a sound manager to play audio feedback. */
+    public void setSoundManager(SoundManager soundManager) {
+        this.soundManager = soundManager;
     }
 
     /**
@@ -63,8 +77,9 @@ public final class Controller {
             Optional<Piece> occupant = gameEngine.getBoard().pieceAt(clicked);
             if (occupant.isPresent()) {
                 selected = clicked;
+                // Render immediately so the selection highlight appears
+                if (renderer != null) renderer.render(gameEngine.snapshot());
             }
-            // Ignore first clicks on empty cells.
             return ControllerResult.none();
         }
 
@@ -72,7 +87,11 @@ public final class Controller {
         // selection afterward, regardless of whether GameEngine accepts it.
         Position source = selected;
         selected = null;
-        gameEngine.requestMove(source, clicked);
+        GameEngine.MoveResult result = gameEngine.requestMove(source, clicked);
+        if (result.isAccepted() && soundManager != null) {
+            soundManager.playMoveStart();
+        }
+        if (renderer != null) renderer.render(gameEngine.snapshot());
         return new ControllerResult(true, source, clicked);
     }
 

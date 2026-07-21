@@ -35,6 +35,21 @@
       <version>5.10.2</version>
       <scope>test</scope>
     </dependency>
+    <!-- Required by TestRunner.java (src/main/java): provides LauncherFactory,
+         LauncherDiscoveryRequestBuilder, SummaryGeneratingListener, etc.
+         compile scope because TestRunner is a main-source test entry point. -->
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-launcher</artifactId>
+      <version>1.10.2</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-engine</artifactId>
+      <version>1.10.2</version>
+      <scope>compile</scope>
+    </dependency>
   </dependencies>
 
   <build>

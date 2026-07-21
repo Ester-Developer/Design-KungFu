@@ -43,7 +43,7 @@ public final class ScriptRunner {
             } else if (lower.startsWith("wait ")) {
                 String[] parts = line.split("\\s+");
                 long ms = Long.parseLong(parts[1]);
-                engine.waitMs(ms);
+                engine.waitMs(ms); // return value intentionally ignored in script mode
             }
             // Any other verb is outside the common-route DSL and is ignored.
         }

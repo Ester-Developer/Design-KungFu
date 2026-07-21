@@ -15,25 +15,30 @@ public final class Motion {
     private final Piece piece;
     private final Position from;
     private final Position to;
+    private final long startTime;
     private final long dueTime;
 
     /**
-     * @param piece   the piece in flight (identity is used to detect if it was
-     *                captured/removed before this motion resolves)
-     * @param from    origin cell
-     * @param to      destination cell
-     * @param dueTime absolute game-clock time (ms) at which this motion resolves
+     * @param piece     the piece in flight (identity is used to detect if it was
+     *                  captured/removed before this motion resolves)
+     * @param from      origin cell
+     * @param to        destination cell
+     * @param startTime absolute game-clock time (ms) when this motion was started
+     * @param dueTime   absolute game-clock time (ms) at which this motion resolves
      */
-    public Motion(Piece piece, Position from, Position to, long dueTime) {
+    public Motion(Piece piece, Position from, Position to, long startTime, long dueTime) {
         this.piece = piece;
         this.from = from;
         this.to = to;
+        this.startTime = startTime;
         this.dueTime = dueTime;
     }
 
     public Piece getPiece() { return piece; }
     public Position getFrom() { return from; }
     public Position getTo() { return to; }
+    /** @return absolute game-clock time (ms) when this motion started. */
+    public long getStartTime() { return startTime; }
     public long getDueTime() { return dueTime; }
 
     /** @return the color of the travelling piece, e.g. {@code "white"}. */

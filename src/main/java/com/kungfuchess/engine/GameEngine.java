@@ -26,6 +26,7 @@ public class GameEngine {
     private Board board;
     private final RealTimeArbiter arbiter;
     private boolean gameOver;
+    private String turn = "white";
     private com.kungfuchess.input.Controller controller;
     private static final RuleEngine RULE_ENGINE = new RuleEngine();
 
@@ -78,21 +79,15 @@ public class GameEngine {
      *
      * <p>This is the single authority for "is starting this move allowed right now?":
      * <ol>
-     *   <li>If the game is already over, reject with reason {@code "game_over"} —
-     *       {@link RuleEngine} is never even consulted.</li>
-     *   <li>If the common route already has an active motion (any color — see
-     *       {@link RealTimeArbiter#hasActiveMotion()}), reject with reason
-     *       {@code "motion_in_progress"}.</li>
+     *   <li>If the game is already over, reject with reason {@code "game_over"}.</li>
+     *   <li>If the specific piece being moved is on per-piece cooldown (still in
+     *       flight or resting after a recent move), reject with reason
+     *       {@code "piece_on_cooldown"}. Other pieces' motions do NOT block this
+     *       piece — pieces move concurrently.</li>
      *   <li>Otherwise, delegate to {@link RuleEngine#validateMove}. If invalid, its
      *       reason is copied straight into the returned {@link MoveResult}.</li>
-     *   <li>If valid, start the motion via {@link RealTimeArbiter#startMotion}. The
-     *       board does not change immediately — only once the motion arrives, via
-     *       {@link #wait}.</li>
+     *   <li>If valid, start the motion via {@link RealTimeArbiter#startMotion}.</li>
      * </ol>
-     *
-     * <p>Callers such as {@code Controller} should only ever translate input into a
-     * {@code from}/{@code to} request and call this method; they must not decide
-     * legality or touch the {@link RealTimeArbiter} themselves.</p>
      *
      * @param from source position
      * @param to   destination position
@@ -104,11 +99,13 @@ public class GameEngine {
             return MoveResult.rejected(MoveResult.GAME_OVER);
         }
 
-        if (arbiter.hasActiveMotion()) {
-            return MoveResult.rejected(MoveResult.MOTION_IN_PROGRESS);
+        Optional<Piece> movingOpt = board.pieceAt(from);
+
+        // Per-piece cooldown check — independent of any other piece's motion
+        if (movingOpt.isPresent() && arbiter.isOnCooldown(movingOpt.get())) {
+            return MoveResult.rejected(MoveResult.PIECE_ON_COOLDOWN);
         }
 
-        Optional<Piece> movingOpt = board.pieceAt(from);
         boolean pawnHasMoved = movingOpt.isPresent() && arbiter.hasMoved(movingOpt.get());
 
         RuleEngine.MoveValidation validation = RULE_ENGINE.validateMove(board, from, to, pawnHasMoved);
@@ -117,13 +114,14 @@ public class GameEngine {
         }
 
         arbiter.startMotion(movingOpt.get(), from, to);
+        turn = turn.equals("white") ? "black" : "white";
         return MoveResult.ok();
     }
 
     /**
-     * Advances simulated time by {@code ms} and resolves any motions that have now
-     * arrived. Delegates entirely to {@link RealTimeArbiter#advanceTime}; this method
-     * must not directly manipulate board or motion state itself.
+     * Advances simulated time by {@code ms}, resolves any motions that have now
+     * arrived, and returns the resulting {@link RealTimeArbiter.ArrivalEvents} so
+     * callers can react to captures and landings (e.g. play sounds).
      *
      * <p>Named {@code waitMs} rather than {@code wait} — the design spec calls this
      * {@code GameEngine.wait(ms)}, but Java forbids overriding {@link Object#wait(long)},
@@ -132,8 +130,9 @@ public class GameEngine {
      * <p>If a King was captured on arrival, {@code game_over} is set.</p>
      *
      * @param ms milliseconds to advance
+     * @return every arrival that occurred during this advance (possibly empty)
      */
-    public void waitMs(long ms) {
+    public RealTimeArbiter.ArrivalEvents waitMs(long ms) {
         RealTimeArbiter.ArrivalEvents events = arbiter.advanceTime(ms, board);
         for (RealTimeArbiter.ArrivalEvents.ArrivalEvent event : events.arrivals()) {
             Piece captured = event.capturedPiece();
@@ -141,6 +140,7 @@ public class GameEngine {
                 gameOver = true;
             }
         }
+        return events;
     }
 
     /**
@@ -149,7 +149,9 @@ public class GameEngine {
      * the game is over. Never exposes a live, mutable {@code Board} for writing.
      */
     public GameSnapshot snapshot() {
-        return new GameSnapshot(board, getSelectedPosition().orElse(null), gameOver);
+        return new GameSnapshot(board, getSelectedPosition().orElse(null), gameOver, turn,
+                                arbiter.getPendingMotions(), arbiter.getClock(),
+                                arbiter.getCooldownMap());
     }
 
     // -------------------------------------------------------------------------
@@ -278,8 +280,14 @@ public class GameEngine {
      */
     public static final class MoveResult {
 
-        public static final String OK = "ok";
-        public static final String GAME_OVER = "game_over";
+        public static final String OK               = "ok";
+        public static final String GAME_OVER        = "game_over";
+        public static final String PIECE_ON_COOLDOWN = "piece_on_cooldown";
+        /**
+         * Retained for backward compatibility with existing tests that check for this
+         * reason string. In the new concurrent model this reason is no longer produced
+         * by {@link GameEngine#requestMove} — use {@link #PIECE_ON_COOLDOWN} instead.
+         */
         public static final String MOTION_IN_PROGRESS = "motion_in_progress";
 
         private final boolean accepted;
@@ -339,38 +347,57 @@ public class GameEngine {
         private final Board board;
         private final Position selectedCell;
         private final boolean gameOver;
+        private final String turn;
+        private final java.util.List<com.kungfuchess.realtime.Motion> activeMotions;
+        private final long clock;
+        private final java.util.Map<Piece, Long> cooldownUntilMs;
 
-        public GameSnapshot(Board board, Position selectedCell, boolean gameOver) {
+        public GameSnapshot(Board board, Position selectedCell, boolean gameOver,
+                            String turn,
+                            java.util.List<com.kungfuchess.realtime.Motion> activeMotions,
+                            long clock,
+                            java.util.Map<Piece, Long> cooldownUntilMs) {
             this.board = board;
             this.selectedCell = selectedCell;
             this.gameOver = gameOver;
+            this.turn = turn;
+            this.activeMotions = java.util.Collections.unmodifiableList(
+                new java.util.ArrayList<>(activeMotions));
+            this.clock = clock;
+            this.cooldownUntilMs = java.util.Collections.unmodifiableMap(
+                new java.util.IdentityHashMap<>(cooldownUntilMs));
         }
 
-        public int boardWidth() {
-            return board.getWidth();
-        }
-
-        public int boardHeight() {
-            return board.getHeight();
-        }
+        public int boardWidth()  { return board.getWidth(); }
+        public int boardHeight() { return board.getHeight(); }
 
         /** @return the underlying board, for read-only queries (piece kind/color/position). */
-        public Board board() {
-            return board;
+        public Board board() { return board; }
+        public Position selectedCell() { return selectedCell; }
+        public boolean gameOver() { return gameOver; }
+
+        /** @return {@code "white"} or {@code "black"} — whose turn it is to move. */
+        public String turn() { return turn; }
+
+        /** @return motions currently in flight (read-only snapshot). */
+        public java.util.List<com.kungfuchess.realtime.Motion> activeMotions() {
+            return activeMotions;
         }
 
-        public Position selectedCell() {
-            return selectedCell;
-        }
+        /** @return the simulation clock (ms) at the moment this snapshot was taken. */
+        public long clock() { return clock; }
 
-        public boolean gameOver() {
-            return gameOver;
-        }
+        /**
+         * @return per-piece "available again at" timestamps (identity-keyed).
+         *         A piece is on cooldown while {@code clock() < cooldownUntilMs().get(piece)}.
+         */
+        public java.util.Map<Piece, Long> cooldownUntilMs() { return cooldownUntilMs; }
 
         @Override
         public String toString() {
             return "GameSnapshot(width=" + boardWidth() + ", height=" + boardHeight()
-                + ", selectedCell=" + selectedCell + ", gameOver=" + gameOver + ")";
+                + ", selectedCell=" + selectedCell + ", gameOver=" + gameOver
+                + ", turn=" + turn + ")";
         }
     }
 }

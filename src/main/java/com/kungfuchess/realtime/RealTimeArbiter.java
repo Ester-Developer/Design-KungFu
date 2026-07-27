@@ -15,18 +15,18 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Owns real-time movement: simulated elapsed time, concurrent in-flight
- * {@link Motion motions}, per-piece cooldown windows, temporary jump protections,
- * and first-move tracking (for pawn double-stepping).
+ * Owns real-time movement: simulated elapsed time, in-flight {@link Motion motions},
+ * per-piece cooldown windows, temporary jump protections, and first-move tracking.
  *
- * <p>Pieces move independently and concurrently — there is no global single-motion
- * lock. A piece is blocked only by its own per-piece cooldown (set when it starts
- * moving and covering the full travel + rest chain), not by any other piece's motion.
- * {@link GameEngine} enforces this via {@link #isOnCooldown(Piece)}.</p>
+ * <p>Pieces move concurrently — there is no global single-motion lock. Each piece is
+ * gated only by its own per-piece cooldown (travel time + rest chain), checked by
+ * {@link com.kungfuchess.engine.GameEngine} via {@link #isOnCooldown(Piece)}.</p>
  *
- * <p>{@link #hasActiveMotion()} is retained for callers that need to know whether
- * <em>any</em> motion is in flight (e.g. the game-loop renderer), but it is no longer
- * used as a move gate.</p>
+ * <p>The {@link #addProtection}/{@link #isProtected} mechanism is retained as a
+ * dormant capability for a future "simultaneous arrival" feature (where two pieces
+ * land on the same square at the same instant and one should bounce). It is NOT
+ * called from {@link #startMotion} — a Knight that has landed is immediately
+ * capturable like any other stationary piece.</p>
  */
 public class RealTimeArbiter {
 
@@ -48,10 +48,25 @@ public class RealTimeArbiter {
         Collections.newSetFromMap(new IdentityHashMap<>());
 
     /**
+     * Pieces that were removed from their origin square by an enemy landing there
+     * while they were in-flight. Their motion is still valid and they will land
+     * at their destination normally — the origin check is skipped for these.
+     */
+    private final Set<Piece> displacedPieces =
+        Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /**
      * Per-piece "available again at" timestamp (absolute game-clock ms).
      * A piece is on cooldown while {@code clock < cooldownUntil[piece]}.
      */
     private final Map<Piece, Long> cooldownUntil = new IdentityHashMap<>();
+
+    /**
+     * Per-piece "cooldown started at" timestamp (absolute game-clock ms).
+     * Set at the same time as {@link #cooldownUntil} so the renderer can compute
+     * a progress fraction without needing to infer the start time indirectly.
+     */
+    private final Map<Piece, Long> cooldownStart = new IdentityHashMap<>();
 
     /** A temporary shield over a cell, protecting whatever piece jumped there. */
     private static final class Protection {
@@ -93,8 +108,27 @@ public class RealTimeArbiter {
     }
 
     /**
+     * @return the absolute game-clock ms at which this piece's cooldown ends, or
+     *         {@code 0} if the piece has no active cooldown entry.
+     */
+    public long cooldownUntilMs(Piece piece) {
+        Long until = cooldownUntil.get(piece);
+        return until != null ? until : 0L;
+    }
+
+    /**
+     * @return the absolute game-clock ms at which this piece's current cooldown window
+     *         began, or {@code 0} if the piece has no active cooldown entry.
+     *         Together with {@link #cooldownUntilMs} this lets the renderer compute a
+     *         progress fraction: {@code (until - clock) / (until - start)}.
+     */
+    public long cooldownStartMs(Piece piece) {
+        Long start = cooldownStart.get(piece);
+        return start != null ? start : 0L;
+    }
+
+    /**
      * @return a read-only view of the per-piece cooldown map (identity-keyed).
-     *         Used by {@link com.kungfuchess.engine.GameEngine.GameSnapshot}.
      */
     public java.util.Map<Piece, Long> getCooldownMap() {
         return Collections.unmodifiableMap(cooldownUntil);
@@ -128,13 +162,16 @@ public class RealTimeArbiter {
     // Registering new motions
     // -------------------------------------------------------------------------
 
+    /** Speed multiplier applied to all motion travel times (0.70 = 30% faster). */
+    public static final double SPEED_MULTIPLIER = 0.70;
+
     /**
      * Starts a validated motion for {@code piece} from {@code from} to {@code to}.
      *
      * <p>Travel duration is derived from the piece's own {@code speed_m_per_sec} in
-     * its {@code move} config (1 cell = 1 m). The per-piece cooldown window is set to
-     * cover the full travel time plus the total duration of the rest-state chain that
-     * follows (read from the JSON config chain).</p>
+     * its {@code move} config (1 cell = 1 m), then multiplied by {@link #SPEED_MULTIPLIER}
+     * (30% faster). The per-piece cooldown window covers the full travel time plus the
+     * rest-state chain that follows.</p>
      *
      * @param piece the piece in flight
      * @param from  origin cell
@@ -142,22 +179,144 @@ public class RealTimeArbiter {
      */
     public void startMotion(Piece piece, Position from, Position to) {
         String code  = PieceConfig.pieceCode(piece);
-        PieceConfig.StateConfig moveCfg = PieceConfig.get(code, "move");
+        boolean isKnightJump = "Knight".equals(piece.getKind());
+        String  stateKey = isKnightJump ? "jump" : "move";
+        PieceConfig.StateConfig moveCfg = PieceConfig.get(code, stateKey);
 
-        long travel  = travelTime(from, to, moveCfg.speedMPerSec);
+        long travel  = Math.round(travelTime(from, to, moveCfg.speedMPerSec) * SPEED_MULTIPLIER);
         long dueTime = clock + travel;
-        pendingMotions.add(new Motion(piece, from, to, clock, dueTime));
+        pendingMotions.add(new Motion(piece, from, to, clock, dueTime, isKnightJump));
         markMoved(piece);
 
         // Cooldown = travel time + full rest chain after landing
         long restChain = restChainDurationMs(code, moveCfg.nextState);
         cooldownUntil.put(piece, dueTime + restChain);
+        cooldownStart.put(piece, clock);  // record when this cooldown window began
+    }
+
+    /**
+     * @return {@code true} if the given destination is already targeted by an
+     * active in-flight motion. Used by {@link com.kungfuchess.engine.GameEngine}
+     * to reject a second move to the same square while the first is in flight.
+     *
+     * <p>Dodge exception: a dodge motion targeting its own square is allowed to
+     * coexist with the specific attacker motion it was issued against. This exception
+     * is scoped narrowly via {@link Motion#getDodgeThreatMotion()} — only the exact
+     * paired attacker+defender are exempt; any unrelated third motion is still rejected.</p>
+     *
+     * @param destination the square to check
+     * @param requestingMotion the motion being considered (null for non-dodge checks)
+     */
+    public boolean isDestinationReserved(Position destination, Motion requestingMotion) {
+        for (Motion m : pendingMotions) {
+            if (!m.getTo().equals(destination)) continue;
+            // Dodge exception: if the requesting motion is a dodge that was issued
+            // against this exact existing motion, allow the coexistence.
+            if (requestingMotion != null && requestingMotion.isDodge()
+                    && requestingMotion.getDodgeThreatMotion() == m) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Backward-compatible overload (no requesting motion — used for normal moves).
+     */
+    public boolean isDestinationReserved(Position destination) {
+        return isDestinationReserved(destination, null);
+    }
+
+    /**
+     * @return {@code true} if the given position is the FROM square of any currently
+     * in-flight motion. Used by {@link com.kungfuchess.engine.GameEngine} to prevent
+     * a second piece from targeting or departing from a square that is already vacating.
+     */
+    public boolean isSourceReserved(Position source) {
+        for (Motion m : pendingMotions) {
+            if (m.getFrom().equals(source)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * @return {@code true} if this piece kind uses a jump motion.
+     * Currently always {@code false} — the jump animation state is not used.
+     * Retained for API compatibility.
+     */
+    public static boolean isJumpPiece(String kind) {
+        return false;
     }
 
     /** Low-level escape hatch used by extra-route variants that build their own Motion. */
     public void addMotion(Motion motion) {
         pendingMotions.add(motion);
     }
+
+    /**
+     * Executes an instant Scream: the screaming piece stays at {@code from} and
+     * immediately removes the enemy piece at {@code target}. The result is returned
+     * as an {@link ArrivalEvents} with a single scream-flagged event so the caller
+     * can update scores and the move log normally.
+     *
+     * <p>No Motion is queued — the effect is immediate. The screaming piece's cooldown
+     * is set to the same window as a normal move (travel=0, rest-chain follows).</p>
+     *
+     * @param screamer the piece performing the scream
+     * @param from     the screamer's current position
+     * @param target   the enemy piece's position (must be adjacent)
+     * @param board    the live board to mutate
+     * @return a single-event {@link ArrivalEvents} for the caller to process
+     * @throws Board.OutOfBoundsException if any position is out of bounds
+     */
+    public ArrivalEvents startScream(Piece screamer, Position from, Position target, Board board)
+            throws Board.OutOfBoundsException {
+        Optional<Piece> targetOccupant = board.pieceAt(target);
+        Piece capturedPiece = targetOccupant.orElse(null);
+        if (capturedPiece != null) {
+            board.removePiece(target);
+        }
+
+        markMoved(screamer);
+
+        // Cooldown: use the "move" state's rest chain (screamer stays in place)
+        String code = PieceConfig.pieceCode(screamer);
+        PieceConfig.StateConfig moveCfg = PieceConfig.get(code, "move");
+        long restChain = restChainDurationMs(code, moveCfg.nextState);
+        cooldownUntil.put(screamer, clock + restChain);
+        cooldownStart.put(screamer, clock);
+
+        List<ArrivalEvents.ArrivalEvent> events = new ArrayList<>();
+        events.add(new ArrivalEvents.ArrivalEvent(
+            screamer, from, from, capturedPiece, false, false, false, true)); // scream=true
+        return new ArrivalEvents(events);
+    }
+
+    /**
+     * Registers a Dodge motion for {@code piece} at {@code square} (from==to), timed
+     * to resolve {@link #DODGE_BUFFER_MS} after the threatening motion's dueTime.
+     *
+     * <p>The dodge motion is stored with a reference to the exact threat motion so the
+     * destination-reservation exception can be scoped narrowly to this pair only.</p>
+     *
+     * @param piece        the defending piece
+     * @param square       the square to dodge on (piece's current position)
+     * @param threatMotion the specific attacker motion being countered
+     */
+    public void startDodge(Piece piece, Position square, Motion threatMotion) {
+        long dueTime = threatMotion.getDueTime() + DODGE_BUFFER_MS;
+        Motion dodge = new Motion(piece, square, square, clock, dueTime, false, true, threatMotion);
+        pendingMotions.add(dodge);
+        markMoved(piece);
+        // Cooldown extends to cover the dodge resolution
+        String code = PieceConfig.pieceCode(piece);
+        PieceConfig.StateConfig moveCfg = PieceConfig.get(code, "move");
+        long restChain = restChainDurationMs(code, moveCfg.nextState);
+        cooldownUntil.put(piece, dueTime + restChain);
+        cooldownStart.put(piece, clock);
+    }
+
+    /** Buffer (ms) added to the threat's dueTime to guarantee the dodge resolves after the attacker. */
+    public static final long DODGE_BUFFER_MS = 150L;
 
     public void addProtection(Position position, long dueTime) {
         pendingProtections.add(new Protection(position, dueTime));
@@ -226,11 +385,19 @@ public class RealTimeArbiter {
 
         List<ArrivalEvents.ArrivalEvent> arrivals = new ArrayList<>();
 
+        // Collect all due motions first to avoid ConcurrentModificationException
+        // when resolveMotion needs to cancel a related in-flight motion.
+        List<Motion> due = new ArrayList<>();
         Iterator<Motion> it = pendingMotions.iterator();
         while (it.hasNext()) {
             Motion motion = it.next();
-            if (motion.getDueTime() > clock) continue;
-            it.remove();
+            if (motion.getDueTime() <= clock) {
+                it.remove();
+                due.add(motion);
+            }
+        }
+
+        for (Motion motion : due) {
             try {
                 resolveMotion(board, motion, arrivals);
             } catch (Board.OutOfBoundsException e) {
@@ -246,12 +413,59 @@ public class RealTimeArbiter {
     private void resolveMotion(Board board, Motion motion,
                                 List<ArrivalEvents.ArrivalEvent> arrivals)
             throws Board.OutOfBoundsException {
+
+        // --- Dodge motion resolution ---
+        // A dodge motion has from==to. The piece was removed from the board when the
+        // attacker arrived (see below), so we skip the origin-occupancy check and
+        // treat this as a normal landing on the square (capturing whatever is there).
+        if (motion.isDodge()) {
+            Optional<Piece> destinationOccupant = board.pieceAt(motion.getTo());
+            Piece capturedPiece = destinationOccupant.orElse(null);
+            // Place the dodging piece back on its square (capturing the attacker if present)
+            if (capturedPiece != null) {
+                board.removePiece(motion.getTo());
+            }
+            try {
+                board.addPiece(motion.getTo(), motion.getPiece());
+            } catch (Board.OccupiedCellException e) {
+                throw new IllegalStateException("Dodge landing target unexpectedly occupied", e);
+            }
+            boolean promoted = promoteIfEligible(board, motion.getTo());
+            cooldownStart.put(motion.getPiece(), motion.getDueTime());
+            arrivals.add(new ArrivalEvents.ArrivalEvent(
+                motion.getPiece(), motion.getFrom(), motion.getTo(),
+                capturedPiece, false, promoted, true));  // dodge=true
+            return;
+        }
+
+        // --- Normal motion resolution ---
+        // Skip origin check for displaced pieces (removed from origin by an enemy
+        // landing there while this piece was in-flight — not a capture).
         Optional<Piece> originOccupant = board.pieceAt(motion.getFrom());
-        if (originOccupant.isEmpty() || originOccupant.get() != motion.getPiece()) {
-            return; // piece was captured or otherwise gone — motion is moot
+        boolean displaced = displacedPieces.remove(motion.getPiece());
+        if (!displaced) {
+            if (originOccupant.isEmpty() || originOccupant.get() != motion.getPiece()) {
+                return; // piece was captured or otherwise gone — motion is moot
+            }
         }
 
         Optional<Piece> destinationOccupant = board.pieceAt(motion.getTo());
+
+        // In-transit ghost: if the piece at the destination has already departed
+        // (its own outgoing motion is still pending), treat the square as empty —
+        // the departed piece continues to its own destination unaffected.
+        if (destinationOccupant.isPresent()) {
+            Piece occupant = destinationOccupant.get();
+            for (Motion m : pendingMotions) {
+                if (!m.isDodge() && m.getPiece() == occupant && m.getFrom().equals(motion.getTo())) {
+                    // Mark occupant as displaced so its own motion can still land
+                    displacedPieces.add(occupant);
+                    board.removePiece(motion.getTo());
+                    destinationOccupant = Optional.empty();
+                    break;
+                }
+            }
+        }
 
         if (destinationOccupant.isPresent() && isProtected(motion.getTo(), clock)) {
             // Defender jumped to safety — attacker crashes
@@ -259,12 +473,47 @@ public class RealTimeArbiter {
             return;
         }
 
+        // Check if the destination piece has a pending Dodge motion countering THIS motion.
+        // If so: remove the defender from the board (without capture) so the attacker can
+        // occupy the square, but keep the Piece instance alive in the pending dodge motion.
+        if (destinationOccupant.isPresent()) {
+            Piece defender = destinationOccupant.get();
+            boolean defenderIsDodging = false;
+            for (Motion m : pendingMotions) {
+                if (m.isDodge() && m.getPiece() == defender && m.getDodgeThreatMotion() == motion) {
+                    defenderIsDodging = true;
+                    break;
+                }
+            }
+            if (defenderIsDodging) {
+                // Remove defender silently (no capture event) — it will land back via its own dodge motion
+                board.removePiece(motion.getTo());
+                destinationOccupant = Optional.empty(); // attacker lands on now-empty square
+            }
+        }
+
         Piece capturedPiece = destinationOccupant.orElse(null);
-        board.movePiece(motion.getFrom(), motion.getTo());
-        promoteIfEligible(board, motion.getTo());
+        if (capturedPiece != null) {
+            board.removePiece(motion.getTo());
+        }
+        if (displaced) {
+            // Piece was displaced from its origin — place it directly at destination
+            try {
+                board.addPiece(motion.getTo(), motion.getPiece());
+            } catch (Board.OccupiedCellException e) {
+                throw new IllegalStateException("Displaced piece landing target unexpectedly occupied", e);
+            }
+        } else {
+            board.movePiece(motion.getFrom(), motion.getTo());
+        }
+        boolean promoted = promoteIfEligible(board, motion.getTo());
+
+        // Reset cooldownStart to the landing time so the rest-chain fraction
+        // starts at 0% from the moment the piece lands, not from when it departed.
+        cooldownStart.put(motion.getPiece(), motion.getDueTime());
 
         arrivals.add(new ArrivalEvents.ArrivalEvent(
-            motion.getPiece(), motion.getFrom(), motion.getTo(), capturedPiece));
+            motion.getPiece(), motion.getFrom(), motion.getTo(), capturedPiece, false, promoted, false));
     }
 
     private boolean isProtected(Position position, long clock) {
@@ -274,15 +523,22 @@ public class RealTimeArbiter {
         return false;
     }
 
-    private void promoteIfEligible(Board board, Position at) throws Board.OutOfBoundsException {
+    /**
+     * Promotes a pawn that has reached the far rank to a Queen of the same color.
+     * White pawns promote at row 0; black pawns promote at row {@code height - 1}.
+     * {@link Piece} is immutable, so promotion replaces the piece on the board.
+     *
+     * @return {@code true} if a promotion occurred
+     */
+    private boolean promoteIfEligible(Board board, Position at) throws Board.OutOfBoundsException {
         Optional<Piece> occupant = board.pieceAt(at);
-        if (occupant.isEmpty() || !"Pawn".equals(occupant.get().getKind())) return;
+        if (occupant.isEmpty() || !"Pawn".equals(occupant.get().getKind())) return false;
 
         Piece pawn = occupant.get();
         boolean reachedFarEdge =
             ("white".equals(pawn.getColor()) && at.getRow() == 0)
             || ("black".equals(pawn.getColor()) && at.getRow() == board.getHeight() - 1);
-        if (!reachedFarEdge) return;
+        if (!reachedFarEdge) return false;
 
         board.removePiece(at);
         try {
@@ -290,6 +546,7 @@ public class RealTimeArbiter {
         } catch (Board.OccupiedCellException e) {
             throw new IllegalStateException("Promotion target unexpectedly occupied", e);
         }
+        return true;
     }
 
     // -------------------------------------------------------------------------
@@ -309,24 +566,61 @@ public class RealTimeArbiter {
             private final Position source;
             private final Position destination;
             private final Piece    capturedPiece;
+            private final boolean  jump;
+            private final boolean  promoted;
+            private final boolean  dodge;
+            private final boolean  scream;
 
             public ArrivalEvent(Piece piece, Position source, Position destination,
-                                Piece capturedPiece) {
+                                Piece capturedPiece, boolean jump, boolean promoted,
+                                boolean dodge, boolean scream) {
                 this.piece         = piece;
                 this.source        = source;
                 this.destination   = destination;
                 this.capturedPiece = capturedPiece;
+                this.jump          = jump;
+                this.promoted      = promoted;
+                this.dodge         = dodge;
+                this.scream        = scream;
+            }
+
+            /** Backward-compatible constructor (scream defaults to false). */
+            public ArrivalEvent(Piece piece, Position source, Position destination,
+                                Piece capturedPiece, boolean jump, boolean promoted, boolean dodge) {
+                this(piece, source, destination, capturedPiece, jump, promoted, dodge, false);
+            }
+
+            /** Backward-compatible constructor (promoted and dodge default to false). */
+            public ArrivalEvent(Piece piece, Position source, Position destination,
+                                Piece capturedPiece, boolean jump, boolean promoted) {
+                this(piece, source, destination, capturedPiece, jump, promoted, false, false);
+            }
+
+            /** Backward-compatible constructor (promoted, dodge, scream default to false). */
+            public ArrivalEvent(Piece piece, Position source, Position destination,
+                                Piece capturedPiece, boolean jump) {
+                this(piece, source, destination, capturedPiece, jump, false, false, false);
             }
 
             public Piece    piece()         { return piece; }
             public Position source()        { return source; }
             public Position destination()   { return destination; }
             public Piece    capturedPiece() { return capturedPiece; }
+            /** @return {@code true} if this arrival was from a jump-type motion. */
+            public boolean  isJump()        { return jump; }
+            /** @return {@code true} if this arrival triggered a pawn promotion. */
+            public boolean  isPromoted()    { return promoted; }
+            /** @return {@code true} if this was a Dodge motion resolution. */
+            public boolean  isDodge()       { return dodge; }
+            /** @return {@code true} if this was a Scream capture (no movement). */
+            public boolean  isScream()      { return scream; }
 
             @Override
             public String toString() {
                 return "ArrivalEvent(piece=" + piece + ", source=" + source
-                    + ", destination=" + destination + ", capturedPiece=" + capturedPiece + ")";
+                    + ", destination=" + destination + ", capturedPiece=" + capturedPiece
+                    + ", jump=" + jump + ", promoted=" + promoted
+                    + ", dodge=" + dodge + ", scream=" + scream + ")";
             }
         }
 

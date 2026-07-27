@@ -4,84 +4,112 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Parses the text integration DSL: raw script text in the form
+ * Parses the text integration DSL into a board section and a list of raw lines
+ * (commands interleaved with expected-board rows).
  *
- * <pre>
- * Board:
- * wK . . bK
- * . . . .
- * wR . . bR
- * Commands:
- * print board
- * </pre>
+ * <p>Accepts two formats:</p>
+ * <ul>
+ *   <li><b>Guide format</b> (preferred): {@code Board} header (no colon), board rows,
+ *       blank line, then commands — no {@code Commands:} marker needed.</li>
+ *   <li><b>Legacy format</b>: {@code Board:} header, board rows, {@code Commands:}
+ *       marker, then commands.</li>
+ * </ul>
  *
- * <p>into a board section and a list of trimmed, non-blank command lines. This is a
- * purely mechanical parsing step — it knows nothing about how to execute a command
- * (that is {@link ScriptRunner}'s job) or how to interpret board notation (that is
- * {@code BoardParser}'s job).</p>
+ * <p>After a {@code print board} command line, any immediately following lines that
+ * are not themselves commands (i.e. not {@code print board}, {@code click …}, or
+ * {@code wait …}) are treated as the expected board rows for that print. These are
+ * preserved in {@link ParsedScript#rawLines()} so {@link ScriptRunner} can compare
+ * them against actual output.</p>
  */
 public final class ScriptParser {
-
-    private static final String BOARD_MARKER = "Board:";
-    private static final String COMMANDS_MARKER = "Commands:";
 
     private ScriptParser() {}
 
     /**
-     * @param text raw script text
-     * @return every non-blank, trimmed line, in order
+     * @param rawText the full script document
+     * @return parsed board text and raw post-board lines (commands + expected rows)
      */
-    public static List<String> parseLines(String text) {
-        List<String> out = new ArrayList<>();
-        for (String line : text.split("\\r?\\n")) {
-            line = line.trim();
-            if (!line.isEmpty()) {
-                out.add(line);
+    public static ParsedScript parse(String rawText) {
+        String[] lines = rawText.split("\\r?\\n");
+
+        List<String> boardLines   = new ArrayList<>();
+        List<String> rawLines     = new ArrayList<>();
+
+        // Detect format: legacy uses "Commands:" marker; guide uses blank-line separator.
+        boolean hasCommandsMarker = rawText.contains("Commands:");
+
+        if (hasCommandsMarker) {
+            // Legacy format: Board: ... Commands: ...
+            boolean inBoard    = false;
+            boolean inCommands = false;
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.equalsIgnoreCase("Board:") || trimmed.equalsIgnoreCase("Board")) {
+                    inBoard = true;
+                    continue;
+                }
+                if (trimmed.equalsIgnoreCase("Commands:")) {
+                    inBoard    = false;
+                    inCommands = true;
+                    continue;
+                }
+                if (inBoard && !trimmed.isEmpty()) {
+                    boardLines.add(trimmed);
+                } else if (inCommands && !trimmed.isEmpty()) {
+                    rawLines.add(trimmed);
+                }
+            }
+        } else {
+            // Guide format: Board header, board rows, blank line, then commands+expected
+            boolean pastHeader    = false;
+            boolean inBoardRows   = false;
+            boolean inCommands    = false;
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (!pastHeader) {
+                    if (trimmed.equalsIgnoreCase("Board:") || trimmed.equalsIgnoreCase("Board")) {
+                        pastHeader  = true;
+                        inBoardRows = true;
+                    }
+                    continue;
+                }
+                if (inBoardRows) {
+                    if (trimmed.isEmpty()) {
+                        inBoardRows = false;
+                        inCommands  = true;
+                    } else {
+                        boardLines.add(trimmed);
+                    }
+                } else if (inCommands) {
+                    // Preserve all lines (commands and expected rows) for ScriptRunner
+                    if (!trimmed.isEmpty()) {
+                        rawLines.add(trimmed);
+                    }
+                }
             }
         }
-        return out;
+
+        return new ParsedScript(String.join("\n", boardLines), rawLines);
     }
 
     /**
-     * @param rawText the full script document
-     * @return the board section (rejoined into a multi-line string) and the command lines
+     * The board section (joined back into a multi-line string) and the raw post-board
+     * lines, which include both command lines and expected-board rows interleaved after
+     * each {@code print board} command.
      */
-    public static ParsedScript parse(String rawText) {
-        List<String> lines = parseLines(rawText);
-
-        List<String> boardLines = new ArrayList<>();
-        List<String> commandLines = new ArrayList<>();
-        boolean inCommands = false;
-
-        for (String line : lines) {
-            if (line.equalsIgnoreCase(BOARD_MARKER)) {
-                continue;
-            }
-            if (line.equalsIgnoreCase(COMMANDS_MARKER)) {
-                inCommands = true;
-                continue;
-            }
-            if (inCommands) {
-                commandLines.add(line);
-            } else {
-                boardLines.add(line);
-            }
-        }
-
-        return new ParsedScript(String.join("\n", boardLines), commandLines);
-    }
-
-    /** The board section (joined back into a multi-line string) and the command lines. */
     public static final class ParsedScript {
-        private final String boardText;
-        private final List<String> commandLines;
+        private final String       boardText;
+        private final List<String> rawLines;
 
-        public ParsedScript(String boardText, List<String> commandLines) {
+        public ParsedScript(String boardText, List<String> rawLines) {
             this.boardText = boardText;
-            this.commandLines = commandLines;
+            this.rawLines  = rawLines;
         }
 
-        public String boardText() { return boardText; }
-        public List<String> commandLines() { return commandLines; }
+        public String       boardText()    { return boardText; }
+        /** All post-board lines: commands and expected rows interleaved. */
+        public List<String> rawLines()     { return rawLines; }
+        /** Backward-compat alias — returns the same list as {@link #rawLines()}. */
+        public List<String> commandLines() { return rawLines; }
     }
 }

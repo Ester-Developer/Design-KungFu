@@ -26,8 +26,9 @@ public class PieceAnimator {
     private long restStartMs      = 0;
     private long totalRestMs      = 0;
 
+    /** Creates an animator for a live Piece instance (used by legacy callers). */
     public PieceAnimator(Piece piece) {
-        this.pieceCode = PieceConfig.pieceCode(piece);
+        this.pieceCode = (piece != null) ? PieceConfig.pieceCode(piece) : "wR";
     }
 
     // -------------------------------------------------------------------------

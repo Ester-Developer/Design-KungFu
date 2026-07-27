@@ -60,6 +60,11 @@ public final class Controller {
      * @throws Exception propagated from board queries (should not occur in practice)
      */
     public ControllerResult click(int pixelX, int pixelY) throws Exception {
+        // Short-circuit immediately if the game is over — no sound, no selection change.
+        if (gameEngine.isGameOver()) {
+            return ControllerResult.none();
+        }
+
         boolean inBounds = BoardMapper.isPixelInBounds(gameEngine.getBoard(), pixelX, pixelY);
 
         if (!inBounds) {
@@ -76,6 +81,12 @@ public final class Controller {
         if (selected == null) {
             Optional<Piece> occupant = gameEngine.getBoard().pieceAt(clicked);
             if (occupant.isPresent()) {
+                // Issue 3: reject first click on a cooldown piece — no selection, play illegal
+                if (gameEngine.getArbiter().isOnCooldown(occupant.get())) {
+                    if (soundManager != null) soundManager.playIllegal();
+                    if (renderer != null) renderer.render(gameEngine.snapshot());
+                    return ControllerResult.none();
+                }
                 selected = clicked;
                 // Render immediately so the selection highlight appears
                 if (renderer != null) renderer.render(gameEngine.snapshot());
@@ -83,16 +94,62 @@ public final class Controller {
             return ControllerResult.none();
         }
 
-        // Second in-board click: always request the move and always clear the
-        // selection afterward, regardless of whether GameEngine accepts it.
+        // Second in-board click: always clear the selection afterward.
         Position source = selected;
         selected = null;
+
+        // Same-square second click → attempt Dodge
+        if (clicked.equals(source)) {
+            GameEngine.MoveResult result = gameEngine.requestDodge(source);
+            if (result.isAccepted()) {
+                if (soundManager != null) soundManager.playDodge();
+            } else {
+                if (soundManager != null) soundManager.playIllegal();
+            }
+            if (renderer != null) renderer.render(gameEngine.snapshot());
+            return new ControllerResult(true, source, clicked, result);
+        }
+
+        // Different-square second click: normal move request
         GameEngine.MoveResult result = gameEngine.requestMove(source, clicked);
-        if (result.isAccepted() && soundManager != null) {
-            soundManager.playMoveStart();
+        if (result.isAccepted()) {
+            if (soundManager != null) soundManager.playMoveStart();
+        } else {
+            if (soundManager != null) soundManager.playIllegal();
         }
         if (renderer != null) renderer.render(gameEngine.snapshot());
-        return new ControllerResult(true, source, clicked);
+        return new ControllerResult(true, source, clicked, result);
+    }
+
+    /**
+     * Handles a right-click at {@code (pixelX, pixelY)}: if a piece is currently
+     * selected and the right-clicked square is an adjacent enemy, attempt a Scream.
+     * Clears the selection regardless of outcome.
+     *
+     * @return the result, or {@link ControllerResult#none()} if no scream was attempted
+     */
+    public ControllerResult rightClick(int pixelX, int pixelY) throws Exception {
+        if (gameEngine.isGameOver()) return ControllerResult.none();
+        if (selected == null) return ControllerResult.none();
+
+        boolean inBounds = BoardMapper.isPixelInBounds(gameEngine.getBoard(), pixelX, pixelY);
+        if (!inBounds) {
+            selected = null;
+            return ControllerResult.none();
+        }
+
+        Position screamerPos = selected;
+        Position targetPos   = BoardMapper.pixelToBoard(pixelX, pixelY);
+        selected = null;  // always clear selection
+
+        GameEngine.MoveResult result = gameEngine.requestScream(screamerPos, targetPos);
+        if (result.isAccepted()) {
+            if (soundManager != null) soundManager.playScream();
+        } else {
+            if (soundManager != null) soundManager.playIllegal();
+        }
+        if (renderer != null) renderer.render(gameEngine.snapshot());
+        return new ControllerResult(true, screamerPos, targetPos, result);
     }
 
     /** @return the currently selected cell, if any. */
@@ -105,6 +162,10 @@ public final class Controller {
      * in-board click after a selection), and — when it did — the source and
      * destination cells that were sent to {@code GameEngine.requestMove}.
      *
+     * <p>When {@link #moveRequested()} is {@code true}, {@link #moveResult()} carries
+     * the full {@link GameEngine.MoveResult} so callers can distinguish accepted moves
+     * from rejected ones (e.g. to flash a warning on the destination square).</p>
+     *
      * <p>Nested here (rather than its own file) to match the project's exact package
      * structure, in which the {@code input} package holds exactly {@code BoardMapper}
      * and {@code Controller}.</p>
@@ -114,11 +175,19 @@ public final class Controller {
         private final boolean moveRequested;
         private final Position source;
         private final Position destination;
+        private final GameEngine.MoveResult moveResult;
 
-        public ControllerResult(boolean moveRequested, Position source, Position destination) {
+        public ControllerResult(boolean moveRequested, Position source, Position destination,
+                                GameEngine.MoveResult moveResult) {
             this.moveRequested = moveRequested;
-            this.source = source;
-            this.destination = destination;
+            this.source        = source;
+            this.destination   = destination;
+            this.moveResult    = moveResult;
+        }
+
+        /** Backward-compatible constructor (moveResult defaults to null). */
+        public ControllerResult(boolean moveRequested, Position source, Position destination) {
+            this(moveRequested, source, destination, null);
         }
 
         public boolean moveRequested() {
@@ -133,15 +202,24 @@ public final class Controller {
             return destination;
         }
 
+        /**
+         * @return the {@link GameEngine.MoveResult} from the move request, or
+         *         {@code null} if no move was requested (first click or out-of-bounds).
+         */
+        public GameEngine.MoveResult moveResult() {
+            return moveResult;
+        }
+
         /** @return a result representing "no move was requested by this click". */
         public static ControllerResult none() {
-            return new ControllerResult(false, null, null);
+            return new ControllerResult(false, null, null, null);
         }
 
         @Override
         public String toString() {
             return "ControllerResult(moveRequested=" + moveRequested
-                + ", source=" + source + ", destination=" + destination + ")";
+                + ", source=" + source + ", destination=" + destination
+                + ", moveResult=" + moveResult + ")";
         }
     }
 }

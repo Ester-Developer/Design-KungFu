@@ -45,13 +45,19 @@ public class GuiLauncher {
         // Initial render — opens the window synchronously
         renderer.render(engine.snapshot());
 
-        // Wire mouse clicks
+        // Wire mouse clicks — translate from scaled display coords to raw canvas coords
         SwingUtilities.invokeLater(() ->
             renderer.getLabel().addMouseListener(new MouseAdapter() {
                 @Override
                 public void mousePressed(MouseEvent e) {
                     try {
-                        controller.click(e.getX(), e.getY());
+                        int rawX = renderer.rawX(e.getX());
+                        int rawY = renderer.rawY(e.getY());
+                        if (javax.swing.SwingUtilities.isRightMouseButton(e)) {
+                            controller.rightClick(rawX, rawY);
+                        } else {
+                            controller.click(rawX, rawY);
+                        }
                     } catch (Exception ex) {
                         ex.printStackTrace();
                     }
@@ -68,7 +74,13 @@ public class GuiLauncher {
             lastTick[0]  = now;
             RealTimeArbiter.ArrivalEvents arrivals = engine.waitMs(elapsed);
             for (RealTimeArbiter.ArrivalEvents.ArrivalEvent arrival : arrivals.arrivals()) {
-                if (arrival.capturedPiece() != null) {
+                if (arrival.isPromoted()) {
+                    soundManager.playPromotion();
+                } else if (arrival.isDodge()) {
+                    soundManager.playDodge();
+                } else if (arrival.isScream()) {
+                    soundManager.playScream();
+                } else if (arrival.capturedPiece() != null) {
                     soundManager.playCapture();
                 } else {
                     soundManager.playMoveLand();

@@ -1,6 +1,7 @@
 package tests.unit;
 
 import com.kungfuchess.engine.GameEngine;
+import com.kungfuchess.input.BoardMapper;
 import com.kungfuchess.input.Controller;
 import com.kungfuchess.model.Board;
 import com.kungfuchess.model.Piece;
@@ -25,21 +26,32 @@ class TestController {
 
     @Test
     void firstClickOnEmptyCellIsIgnored() throws Exception {
-        Controller.ControllerResult result = controller.click(150, 150); // (1,1) is empty
+        // Cell (1,1) center: BOARD_X_OFFSET + 1*100 + 50, BOARD_Y_OFFSET + 1*100 + 50
+        int x = BoardMapper.BOARD_X_OFFSET + 150;
+        int y = BoardMapper.BOARD_Y_OFFSET + 150;
+        Controller.ControllerResult result = controller.click(x, y);
         assertFalse(result.moveRequested());
         assertTrue(controller.getSelected().isEmpty());
     }
 
     @Test
     void firstClickOnAPieceSelectsIt() throws Exception {
-        controller.click(50, 50); // (0,0) has the king
+        // Cell (0,0) center: BOARD_X_OFFSET + 50, BOARD_Y_OFFSET + 50
+        int x = BoardMapper.BOARD_X_OFFSET + 50;
+        int y = BoardMapper.BOARD_Y_OFFSET + 50;
+        controller.click(x, y);
         assertEquals(new Position(0, 0), controller.getSelected().orElseThrow());
     }
 
     @Test
     void secondInBoardClickRequestsAMoveAndClearsSelection() throws Exception {
-        controller.click(50, 50);
-        Controller.ControllerResult result = controller.click(150, 150);
+        int x00 = BoardMapper.BOARD_X_OFFSET + 50;
+        int y00 = BoardMapper.BOARD_Y_OFFSET + 50;
+        int x11 = BoardMapper.BOARD_X_OFFSET + 150;
+        int y11 = BoardMapper.BOARD_Y_OFFSET + 150;
+        
+        controller.click(x00, y00);
+        Controller.ControllerResult result = controller.click(x11, y11);
 
         assertTrue(result.moveRequested());
         assertEquals(new Position(0, 0), result.source());
@@ -49,8 +61,13 @@ class TestController {
 
     @Test
     void selectionClearsEvenWhenTheRequestedMoveIsIllegal() throws Exception {
-        controller.click(50, 50);
-        controller.click(250, 250); // king can't move 2 squares diagonally
+        int x00 = BoardMapper.BOARD_X_OFFSET + 50;
+        int y00 = BoardMapper.BOARD_Y_OFFSET + 50;
+        int x22 = BoardMapper.BOARD_X_OFFSET + 250;
+        int y22 = BoardMapper.BOARD_Y_OFFSET + 250;
+        
+        controller.click(x00, y00);
+        controller.click(x22, y22); // king can't move 2 squares diagonally
 
         assertTrue(controller.getSelected().isEmpty());
         assertTrue(engine.getBoard().pieceAt(new Position(0, 0)).isPresent()); // unmoved
@@ -65,7 +82,10 @@ class TestController {
 
     @Test
     void outOfBoundsClickWithSelectionCancelsItWithoutSendingACommand() throws Exception {
-        controller.click(50, 50);
+        int x00 = BoardMapper.BOARD_X_OFFSET + 50;
+        int y00 = BoardMapper.BOARD_Y_OFFSET + 50;
+        
+        controller.click(x00, y00);
         assertTrue(controller.getSelected().isPresent());
 
         Controller.ControllerResult result = controller.click(-50, -50);

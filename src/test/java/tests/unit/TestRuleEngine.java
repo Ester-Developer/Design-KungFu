@@ -74,11 +74,20 @@ class TestRuleEngine {
     }
 
     @Test
-    void pawnCanDoubleStepOnlyBeforeItsFirstMove() throws Exception {
+    void pawnCanDoubleStepOnFirstMoveOnlyWhenPathIsClear() throws Exception {
         board.addPiece(new Position(6, 0), new Piece("Pawn", "white"));
-
+        // hasMoved=false → double-step allowed
         assertTrue(ruleEngine.isMoveLegal(board, new Position(6, 0), new Position(4, 0), false));
+        // hasMoved=true → double-step blocked
         assertFalse(ruleEngine.isMoveLegal(board, new Position(6, 0), new Position(4, 0), true));
+    }
+
+    @Test
+    void pawnDoubleStepIsBlockedWhenIntermediateSquareIsOccupied() throws Exception {
+        board.addPiece(new Position(6, 0), new Piece("Pawn", "white"));
+        board.addPiece(new Position(5, 0), new Piece("Pawn", "black")); // blocker
+        assertFalse(ruleEngine.isMoveLegal(board, new Position(6, 0), new Position(4, 0), false),
+            "Double-step must be blocked when the intermediate square is occupied");
     }
 
     @Test

@@ -1,9 +1,12 @@
-Board:
+Board
 wR . . .
 . . . .
 . . . .
-Commands:
-click 50 50
-click 350 50
+
+click 294 139
+click 594 139
 wait 3000
 print board
+. . . wR
+. . . .
+. . . .

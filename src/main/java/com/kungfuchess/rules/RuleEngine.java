@@ -44,6 +44,11 @@ public class RuleEngine {
      * {@code "friendly_destination"}, or {@code "illegal_piece_move"})
      * @throws Board.OutOfBoundsException if either position is out of bounds
      */
+    public MoveValidation validateMove(Board board, Position from, Position to)
+            throws Board.OutOfBoundsException {
+        return validateMove(board, from, to, true);
+    }
+
     public MoveValidation validateMove(Board board, Position from, Position to, boolean pawnHasMoved)
             throws Board.OutOfBoundsException {
         if (!board.isInBounds(from) || !board.isInBounds(to)) {
@@ -95,13 +100,13 @@ public class RuleEngine {
      * @throws Board.OutOfBoundsException if either position is out of bounds
      */
     public boolean isMoveLegal(Board board, Position from, Position to) throws Board.OutOfBoundsException {
-        return isMoveLegal(board, from, to, true);
+        return validateMove(board, from, to).isValid();
     }
 
     /**
      * @see #isMoveLegal(Board, Position, Position)
      * @param pawnHasMoved {@code true} if the piece at {@code from} has already moved
-     *                     at least once before (irrelevant for non-Pawn pieces)
+     *                     at least once (used for pawn double-step gate)
      */
     public boolean isMoveLegal(Board board, Position from, Position to, boolean pawnHasMoved)
             throws Board.OutOfBoundsException {
@@ -109,9 +114,10 @@ public class RuleEngine {
     }
 
     /**
-     * Pawn movement shape/occupancy rules: one square straight onto an empty cell, two
-     * squares straight (only before the pawn's first move, with a clear path) onto an
-     * empty cell, or one square diagonally onto a cell occupied by an enemy piece.
+     * Pawn movement shape/occupancy rules:
+     * one square straight onto an empty cell, two squares straight on the pawn's first
+     * move (with clear intermediate square), or one square diagonally onto an
+     * enemy-occupied cell.
      */
     private boolean isPawnMoveLegal(Board board, Position from, Position to, boolean hasMoved)
             throws Board.OutOfBoundsException {
@@ -120,30 +126,24 @@ public class RuleEngine {
         Piece moving = board.pieceAt(from).get();
         int forward = "white".equals(moving.getColor()) ? -1 : 1;
 
+        // One square forward onto an empty cell
         if (dc == 0 && dr == forward) {
             return board.pieceAt(to).isEmpty();
         }
 
-        if (dc == 0 && dr == 2 * forward && !hasMoved && from.getRow() == startingRank(moving, board.getHeight())) {
+        // Two squares forward on first move, intermediate square must also be empty
+        if (dc == 0 && dr == 2 * forward && !hasMoved) {
             Position mid = new Position(from.getRow() + forward, from.getCol());
             return board.pieceAt(mid).isEmpty() && board.pieceAt(to).isEmpty();
         }
 
+        // One square diagonal onto an enemy piece
         if (Math.abs(dc) == 1 && dr == forward) {
             Optional<Piece> destination = board.pieceAt(to);
             return destination.isPresent() && !destination.get().getColor().equals(moving.getColor());
         }
 
         return false;
-    }
-
-    /**
-     * @return the row a pawn of this color starts on: one square in from the far edge in
-     * its backward direction (row {@code height - 2} for white, row {@code 1} for black) —
-     * a double-step is only legal from here, not merely because the piece hasn't moved yet.
-     */
-    private int startingRank(Piece pawn, int boardHeight) {
-        return "white".equals(pawn.getColor()) ? boardHeight - 2 : 1;
     }
 
     /**

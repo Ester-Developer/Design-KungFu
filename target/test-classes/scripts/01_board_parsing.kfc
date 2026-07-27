@@ -1,6 +1,9 @@
-Board:
+Board
 wK . . bK
 . . . .
 wR . . bR
-Commands:
+
 print board
+wK . . bK
+. . . .
+wR . . bR

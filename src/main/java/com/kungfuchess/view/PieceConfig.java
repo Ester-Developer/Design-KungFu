@@ -78,13 +78,17 @@ public final class PieceConfig {
      * collision with King.</p>
      */
     public static String pieceCode(com.kungfuchess.model.Piece piece) {
-        char color = "white".equals(piece.getColor()) ? 'w' : 'b';
-        char kind;
-        switch (piece.getKind()) {
-            case "Knight": kind = 'N'; break;
-            default:       kind = piece.getKind().charAt(0); break;
-        }
-        return "" + color + kind;
+        return pieceCode(piece.getKind(), piece.getColor());
+    }
+
+    /**
+     * Converts kind and color strings to the two-character asset code.
+     * e.g. {@code pieceCode("Rook", "white")} → {@code "wR"}.
+     */
+    public static String pieceCode(String kind, String color) {
+        char c = "white".equals(color) ? 'w' : 'b';
+        char k = "Knight".equals(kind) ? 'N' : kind.charAt(0);
+        return "" + c + k;
     }
 
     // -------------------------------------------------------------------------

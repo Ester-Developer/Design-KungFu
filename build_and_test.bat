@@ -26,11 +26,13 @@ echo [1/3] Compiling main sources...
   src\main\java\com\kungfuchess\realtime\Motion.java ^
   src\main\java\com\kungfuchess\realtime\RealTimeArbiter.java ^
   src\main\java\com\kungfuchess\rules\PieceRules.java ^
+  src\main\java\com\kungfuchess\rules\PieceValues.java ^
   src\main\java\com\kungfuchess\rules\RuleEngine.java ^
   src\main\java\com\kungfuchess\texttests\ScriptParser.java ^
   src\main\java\com\kungfuchess\texttests\ScriptRunner.java ^
   src\main\java\com\kungfuchess\view\util\Img.java ^
   src\main\java\com\kungfuchess\view\util\TileGenerator.java ^
+  src\main\java\com\kungfuchess\view\ViewConstants.java ^
   src\main\java\com\kungfuchess\view\ImageView.java ^
   src\main\java\com\kungfuchess\view\PieceAnimator.java ^
   src\main\java\com\kungfuchess\view\PieceConfig.java ^
@@ -54,7 +56,15 @@ echo [2/3] Compiling test sources...
   src\test\java\tests\unit\TestPieceRules.java ^
   src\test\java\tests\unit\TestPosition.java ^
   src\test\java\tests\unit\TestRealTimeArbiter.java ^
-  src\test\java\tests\unit\TestRuleEngine.java
+  src\test\java\tests\unit\TestRuleEngine.java ^
+  src\test\java\tests\unit\TestNewBehaviors.java ^
+  src\test\java\tests\unit\TestIssue6Diagnosis.java ^
+  src\test\java\tests\unit\TestGameplayFixes.java ^
+  src\test\java\tests\unit\TestDodgeAndFixes.java ^
+  src\test\java\tests\unit\TestAssetDimensions.java ^
+  src\test\java\tests\unit\TestVacatedSquareVisibility.java ^
+  src\test\java\tests\unit\TestFrameSymmetry.java ^
+  src\test\java\tests\regression\TestKnownGoodBehaviors.java
 if errorlevel 1 ( echo TEST COMPILE FAILED & exit /b 1 )
 
 echo [3/3] Running tests...

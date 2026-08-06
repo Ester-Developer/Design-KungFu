@@ -1,86 +1,85 @@
-Markdown
-# 🧠 Autonomous Knowledge Studio & Research Agent
+# ♟️ Kung-Fu Chess
 
-An advanced, interactive research and information-synthesis platform inspired by modern AI assistant workflows. This project empowers users to perform automated, deep web investigations, curate sources dynamically, and generate structured insights through an agentic pipeline.
-
-The application leverages an autonomous ReAct agent to retrieve live web data via the Tavily API, incorporates a state-managed **Human-in-the-Loop (HITL)** validation mechanism for real-time source curation, and compiles precise summaries using advanced language models.
+A high-performance, real-time multiplayer chess variant where players move simultaneously with no turns or waiting. Built completely from scratch using Python, featuring OpenCV rendering, an asynchronous microservice backend, WebSocket multiplayer, ELO matchmaking, and a fully scalable Kubernetes deployment.
 
 ---
 
-## 🎯 Key Architecture & Features
+## 🎯 Game Features & Mechanics
 
-* **Autonomous Research Agent:** Employs a ReAct-based agentic pattern to formulate optimal search strategies and query parameters dynamically.
-* **Tavily Search Integration:** Leverages a specialized search tool optimized for LLM agents to extract high-relevance web sources.
-* **Human-in-the-Loop (HITL) Workflow:** Features a managed execution breakpoint enabling users to review, filter, and approve or reject gathered sources before synthesis.
-* **Stateful Persistence:** Utilizes LangGraph's state management and checkpointing to preserve session states and handle interruption flows seamlessly.
-* **Interactive Streamlit Workspace:** Provides a clean, responsive UI featuring interactive source selection cards, live execution feedback, and formatted markdown outputs with export capabilities.
+* **Simultaneous Real-Time Action:** No turns, no waiting—both players can move any piece at any given time.
+* **Dynamic Cooldown System:** 
+  * *Long Rest:* Standard moves trigger a gold overlay draining over the cell.
+  * *Short Rest:* Jumps trigger a faster-draining purple overlay.
+* **Win Condition:** Capturing the opposing King instantly ends the match.
+* **Smooth State Animations:** Pieces visually transition through states: `idle` $\rightarrow$ `moving` $\rightarrow$ `long_rest` $\rightarrow$ `idle` (or via jumping to `short_rest`).
+* **Disconnection Management:** Automated 20-second grace countdown before an abandoned match results in a forfeit.
 
 ---
 
 ## 🛠️ Technology Stack
 
-* **Orchestration:** LangChain & LangGraph (`StateGraph`, checkpointing)
-* **Intelligence Layer:** OpenAI Language Models (`GPT-4o-mini`)
-* **Search Infrastructure:** Tavily API (Real-time web retrieval)
-* **User Interface:** Streamlit (Interactive Python-based frontend)
-* **Configuration:** Python-dotenv (Secure environment variable management)
+| Layer | Technology |
+| :--- | :--- |
+| **Language** | Python 3.11 |
+| **Rendering** | OpenCV + NumPy |
+| **Networking** | WebSockets (`websockets` library) |
+| **HTTP Services** | FastAPI + Uvicorn |
+| **Event Bus** | NATS (`nats-py`) |
+| **Hot State** | Redis |
+| **Durable Storage** | PostgreSQL (`psycopg2`) |
+| **Containerization** | Docker & Docker Compose |
+| **Orchestration** | Kubernetes (`k8s/`) |
+| **Testing** | pytest |
 
 ---
 
-## 📸 System Workflow Overview
+## 🏗️ Microservice Architecture
 
-1. **Input Phase:** The user specifies a target research topic or technical question within the Streamlit interface to initialize the autonomous agent.
-2. **Curation Phase (HITL):** The system pauses execution to present discovered web sources, allowing the user to select specific references via interactive checkboxes.
-3. **Synthesis Phase:** The agent analyzes and compiles a comprehensive, structured report derived exclusively from the user-approved sources.
+The backend utilizes a decoupled microservice architecture built to support high concurrency:
+
+* **API Gateway (`8080`):** REST entry point handling user authentication and registration.
+* **WS Gateway (`5555`):** WebSocket entry point validating active sessions and routing client messages.
+* **Auth Service (`8000`):** Manages user registration, credential validation, and session tokens.
+* **Rooms API (`8001`):** Redis-backed room creation and lookup management.
+* **Rating Service (`8002`):** Handles ELO calculations and persistence upon match completion.
+* **Matchmaker (`8003`):** ELO-based queue pairing players and emitting match events to NATS (`kfc.matched`).
+* **Game Allocator (`8004`):** Consumes match events, determines the least-loaded shard worker, and dispatches allocations (`kfc.allocated`).
+* **Game Server Shard (`5556–55xx`):** Authoritative multiprocessing game engine maintaining active room sessions (one worker per CPU core).
 
 ---
 
-## ⚙️ Local Installation & Setup
+## 🚀 Installation & Running the Game
 
-Follow these steps to set up and run the project locally on your machine:
-
-### 1. Clone the Repository
+### Local Execution (Standalone, No Server Required)
 ```bash
-git clone [https://github.com/YOUR_USERNAME/notebooklm-research-studio.git](https://github.com/YOUR_USERNAME/notebooklm-research-studio.git)
-cd notebooklm-research-studio
-2. Create and Activate a Virtual Environment
+cd logic
+python graphics/app.py
+Docker Compose (Full Stack Deployment)
 Bash
-# Create the virtual environment
-python -m venv venv
-
-# Activate on Windows (PowerShell):
-.\venv\Scripts\Activate.ps1
-
-# Activate on macOS/Linux:
-source venv/bin/activate
-3. Install Dependencies
-Bash
-pip install -r requirements.txt
-(If a requirements file is not present, install the core packages directly:)
+docker compose up --build
+To run the client after starting the stack:
 
 Bash
-pip install streamlit langchain-core langchain-openai langchain-tavily langgraph python-dotenv
-4. Configure Environment Variables
-Create a file named .env in the root directory of your project and populate your API credentials:
+cd client
+python main.py --host localhost --port 5555 --api-port 8080
+Kubernetes Deployment (Docker Desktop)
+Enable Kubernetes within your Docker Desktop settings, then apply the manifests:
 
-קטע קוד
-OPENAI_API_KEY=your_openai_api_key_here
-TAVILY_API_KEY=your_tavily_api_key_here
-5. Run the Application
 Bash
-streamlit run app.py
-The application will launch automatically in your web browser at http://localhost:8501.
+kubectl apply -f k8s/postgres.yaml -f k8s/redis.yaml -f k8s/nats.yaml
+kubectl apply -f k8s/auth-service.yaml -f k8s/rating-service.yaml -f k8s/rooms-api.yaml
+kubectl apply -f k8s/matchmaker.yaml -f k8s/game-shard.yaml -f k8s/game-allocator.yaml
+kubectl apply -f k8s/api-gateway.yaml -f k8s/ws-gateway.yaml
+Run the network client:
 
-💡 Example Research Topics
-The agent is optimized for exploring complex technological, scientific, and current affairs topics. Try testing the system with prompts such as:
+Bash
+cd client
+python main.py --host localhost --port 30555 --api-port 30080
+🧪 Running Tests
+Execute the test suite using pytest inside the logic module:
 
-"React 19 key features and architectural updates"
-
-"Recent breakthroughs and advancements in Quantum Computing"
-
-"Artificial Intelligence regulatory frameworks in the European Union"
-
-"Comparative state management patterns: Angular vs React"
-
-👥 License
-Developed for academic and professional exploration under modern AI engineering guidelines. Distributed under the MIT License.
+Bash
+cd logic
+python -m pytest tests/
+👥 License & Project Details
+Developed as an advanced full-stack software architecture project demonstrating real-time event-driven programming, multiprocessing, and networked game state synchronization.

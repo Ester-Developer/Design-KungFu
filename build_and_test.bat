@@ -7,13 +7,51 @@ set PC=%M2%\org\junit\platform\junit-platform-commons\1.10.2\junit-platform-comm
 set PE=%M2%\org\junit\platform\junit-platform-engine\1.10.2\junit-platform-engine-1.10.2.jar
 set PL=%M2%\org\junit\platform\junit-platform-launcher\1.10.2\junit-platform-launcher-1.10.2.jar
 set OT=%M2%\org\opentest4j\opentest4j\1.3.0\opentest4j-1.3.0.jar
-set JARS=%JP%;%JE%;%PC%;%PE%;%PL%;%OT%
+set WS=%M2%\org\java-websocket\Java-WebSocket\1.5.6\Java-WebSocket-1.5.6.jar
+set SL_API=%M2%\org\slf4j\slf4j-api\2.0.9\slf4j-api-2.0.9.jar
+set SL_SIMPLE=%M2%\org\slf4j\slf4j-simple\2.0.9\slf4j-simple-2.0.9.jar
+set GSON=%M2%\com\google\code\gson\gson\2.11.0\gson-2.11.0.jar
+set SQLITE=%M2%\org\xerial\sqlite-jdbc\3.46.1.0\sqlite-jdbc-3.46.1.0.jar
+set JARS=%JP%;%JE%;%PC%;%PE%;%PL%;%OT%;%WS%;%SL_API%;%SL_SIMPLE%;%GSON%;%SQLITE%
 
 rmdir /s /q out 2>nul
 mkdir out
 
 echo [1/3] Compiling main sources...
-%JB%\javac.exe -cp "%JARS%" -d out -sourcepath src\main\java ^
+%JB%\javac.exe -encoding UTF-8 -cp "%JARS%" -d out -sourcepath src\main\java ^
+  src\main\java\com\kungfuchess\auth\UserRepository.java ^
+  src\main\java\com\kungfuchess\bus\EventBus.java ^
+  src\main\java\com\kungfuchess\bus\ConsoleEventLogger.java ^
+  src\main\java\com\kungfuchess\bus\EventBusDemo.java ^
+  src\main\java\com\kungfuchess\net\MoveNotation.java ^
+  src\main\java\com\kungfuchess\net\MoveMessage.java ^
+  src\main\java\com\kungfuchess\net\ScreamMessage.java ^
+  src\main\java\com\kungfuchess\net\BoardStateMessage.java ^
+  src\main\java\com\kungfuchess\net\ErrorMessage.java ^
+  src\main\java\com\kungfuchess\net\LoginMessage.java ^
+  src\main\java\com\kungfuchess\net\ColorMessage.java ^
+  src\main\java\com\kungfuchess\net\ServerFullMessage.java ^
+  src\main\java\com\kungfuchess\net\AuthResultMessage.java ^
+  src\main\java\com\kungfuchess\net\PlayRequestMessage.java ^
+  src\main\java\com\kungfuchess\net\NoMatchMessage.java ^
+  src\main\java\com\kungfuchess\net\DisconnectCountdownMessage.java ^
+  src\main\java\com\kungfuchess\net\BoardSerializer.java ^
+  src\main\java\com\kungfuchess\net\RoomCreateMessage.java ^
+  src\main\java\com\kungfuchess\net\RoomJoinMessage.java ^
+  src\main\java\com\kungfuchess\net\RoomInfoMessage.java ^
+  src\main\java\com\kungfuchess\net\RoomErrorMessage.java ^
+  src\main\java\com\kungfuchess\server\ServerSession.java ^
+  src\main\java\com\kungfuchess\server\Room.java ^
+  src\main\java\com\kungfuchess\server\RoomManager.java ^
+  src\main\java\com\kungfuchess\server\Matchmaker.java ^
+  src\main\java\com\kungfuchess\server\ChessWebSocketServer.java ^
+  src\main\java\com\kungfuchess\server\ServerMain.java ^
+  src\main\java\com\kungfuchess\util\ActivityLogger.java ^
+  src\main\java\com\kungfuchess\client\ChessWebSocketClient.java ^
+  src\main\java\com\kungfuchess\client\ClientMain.java ^
+  src\main\java\com\kungfuchess\client\LoginWindow.java ^
+  src\main\java\com\kungfuchess\client\GameOverlayPanel.java ^
+  src\main\java\com\kungfuchess\client\TestClient.java ^
   src\main\java\com\kungfuchess\engine\GameEngine.java ^
   src\main\java\com\kungfuchess\input\BoardMapper.java ^
   src\main\java\com\kungfuchess\input\Controller.java ^
@@ -43,7 +81,11 @@ echo [1/3] Compiling main sources...
 if errorlevel 1 ( echo MAIN COMPILE FAILED & exit /b 1 )
 
 echo [2/3] Compiling test sources...
-%JB%\javac.exe -cp "out;%JARS%" -d out ^
+%JB%\javac.exe -encoding UTF-8 -cp "out;%JARS%" -d out ^
+  src\test\java\com\kungfuchess\auth\UserRepositoryTest.java ^
+  src\test\java\com\kungfuchess\bus\EventBusTest.java ^
+  src\test\java\com\kungfuchess\bus\GameEngineEventIntegrationTest.java ^
+  src\test\java\com\kungfuchess\net\MoveNotationTest.java ^
   src\test\java\tests\integration\TestTextScripts.java ^
   src\test\java\tests\unit\TestBoard.java ^
   src\test\java\tests\unit\TestBoardMapper.java ^

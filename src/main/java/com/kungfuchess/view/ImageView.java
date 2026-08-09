@@ -8,6 +8,7 @@ import com.kungfuchess.model.Position;
 import com.kungfuchess.realtime.Motion;
 import com.kungfuchess.view.util.Img;
 
+import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Font;
@@ -103,6 +104,7 @@ public class ImageView {
     private static final Color COL_COORD         = new Color(90, 85, 75);      // board labels
     private static final Color COL_TURN_ACTIVE   = new Color(30, 140, 50);     // active turn indicator
     private static final Color COL_REJECTED      = new Color(220, 60, 60, 160); // illegal-move flash
+    private static final Color COL_OPPONENT_MOVE = new Color(60, 200, 90, 210); // opponent's in-flight source/dest frame
     private static final Color COL_GAMEOVER_SCRIM = new Color(0, 0, 0, 160);    // game-over dark scrim
     private static final Color COL_GAMEOVER_TEXT  = new Color(255, 220, 60);     // game-over banner text
 
@@ -143,6 +145,14 @@ public class ImageView {
     private String whitePlayerName = "White";
     private String blackPlayerName = "Black";
 
+    // The local viewer's own color/ELO — shown as "You are WHITE" under their panel
+    private String localColor = null;
+    private int localElo = -1;
+
+    // The current room's code — shown in the in-canvas title bar so it's always
+    // visible (not just the OS window title, which players may not notice)
+    private String roomId = null;
+
     // Current frame canvas
     private Img canvas;
 
@@ -153,6 +163,17 @@ public class ImageView {
     public void setPlayerNames(String white, String black) {
         this.whitePlayerName = white;
         this.blackPlayerName = black;
+    }
+
+    /** Sets which color/ELO the local viewer is playing as, shown under their own panel. */
+    public void setLocalPlayerInfo(String color, int elo) {
+        this.localColor = color;
+        this.localElo = elo;
+    }
+
+    /** Sets the current room code, shown in the title bar so it's always visible. */
+    public void setRoomId(String roomId) {
+        this.roomId = roomId;
     }
 
     public BufferedImage getImage() { return canvas == null ? null : canvas.get(); }
@@ -274,6 +295,16 @@ public class ImageView {
         // Coordinate labels outside the board
         drawCoordinateLabels(snapshot);
 
+        // Opponent's in-flight move — subtle green frame on source + destination cells,
+        // so you can see what the other player just did. (Dodge is from==to, skipped —
+        // the piece itself already visibly hops in place.)
+        for (Motion m : snapshot.activeMotions()) {
+            if (m.isDodge()) continue;
+            if (localColor != null && m.getColor().equalsIgnoreCase(localColor)) continue;
+            drawMoveFrame(m.getFrom());
+            drawMoveFrame(m.getTo());
+        }
+
         // Stationary pieces + cooldown overlay
         // Only skip drawing a piece if IT ITSELF is in-flight (not just any piece at that position)
         for (PieceView pv : snapshot.pieces()) {
@@ -319,6 +350,17 @@ public class ImageView {
                 ? (int) Math.round((raw - 0.9) / 0.1 * 4) : 0;
             drawPieceAt(motionId(m), m.getPiece().getKind(), m.getPiece().getColor(), cx, cy, punch);
         }
+    }
+
+    /** Draws a subtle green frame outlining one board cell (opponent's move source/destination). */
+    private void drawMoveFrame(Position pos) {
+        int px = BOARD_OFF_X + pos.getCol() * CELL, py = BOARD_OFF_Y + pos.getRow() * CELL;
+        Graphics2D g = canvas.get().createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setColor(COL_OPPONENT_MOVE);
+        g.setStroke(new BasicStroke(3));
+        g.drawRect(px + 2, py + 2, CELL - 5, CELL - 5);
+        g.dispose();
     }
 
     /**
@@ -463,6 +505,16 @@ public class ImageView {
         // Vertically center using ascent+descent so no clipping at top edge
         int textY = (TITLE_H - fm.getAscent() - fm.getDescent()) / 2 + fm.getAscent();
         g.drawString(title, (CANVAS_W - fm.stringWidth(title)) / 2, textY);
+
+        // Room code — right-aligned, always visible so it can be read off and shared
+        if (roomId != null && !roomId.isBlank()) {
+            g.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 15));
+            g.setColor(new Color(20, 110, 60));
+            String roomText = "Room: " + roomId;
+            java.awt.FontMetrics rfm = g.getFontMetrics();
+            int rTextY = (TITLE_H - rfm.getAscent() - rfm.getDescent()) / 2 + rfm.getAscent();
+            g.drawString(roomText, CANVAS_W - rfm.stringWidth(roomText) - 20, rTextY);
+        }
         g.dispose();
     }
 
@@ -504,6 +556,16 @@ public class ImageView {
 
         // Player name — large, accent color
         canvas.putText(name, x, y, FONT_PLAYER, accent, 0);
+
+        // "You are ___" indicator — fixed offset below the name, doesn't touch the
+        // y-cursor used by the rest of the panel layout below.
+        if (color.equalsIgnoreCase(localColor)) {
+            String youAreText = localElo >= 0
+                ? "You are " + color.toUpperCase() + " · ELO " + localElo
+                : "You are " + color.toUpperCase();
+            canvas.putText(youAreText, x, y + 22, FONT_LABEL, accent, 0);
+        }
+
         // Use SB_HEADER_H as the gap so the chip never overlaps the name text
         y += SB_HEADER_H;
 

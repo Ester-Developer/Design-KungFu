@@ -12,7 +12,12 @@ import java.io.PrintWriter;
 public class TestRunner {
     public static void main(String[] args) {
         LauncherDiscoveryRequest request = LauncherDiscoveryRequestBuilder.request()
-            .selectors(DiscoverySelectors.selectPackage("tests"))
+            .selectors(
+                DiscoverySelectors.selectPackage("tests"),
+                DiscoverySelectors.selectPackage("com.kungfuchess.auth"),
+                DiscoverySelectors.selectPackage("com.kungfuchess.bus"),
+                DiscoverySelectors.selectPackage("com.kungfuchess.net")
+            )
             .build();
 
         SummaryGeneratingListener listener = new SummaryGeneratingListener();

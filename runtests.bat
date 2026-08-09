@@ -1,15 +1,15 @@
 @echo off
-set JAVA="C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot\bin\java.exe"
-set JAVAC="C:\Program Files\Eclipse Adoptium\jdk-17.0.19.10-hotspot\bin\javac.exe"
-set CP=target\classes;target\test-classes;src\test\resources
-set CP=%CP%;%USERPROFILE%\.m2\repository\org\junit\jupiter\junit-jupiter\5.10.2\junit-jupiter-5.10.2.jar
-set CP=%CP%;%USERPROFILE%\.m2\repository\org\junit\jupiter\junit-jupiter-api\5.10.2\junit-jupiter-api-5.10.2.jar
-set CP=%CP%;%USERPROFILE%\.m2\repository\org\junit\jupiter\junit-jupiter-engine\5.10.2\junit-jupiter-engine-5.10.2.jar
-set CP=%CP%;%USERPROFILE%\.m2\repository\org\junit\platform\junit-platform-launcher\1.10.2\junit-platform-launcher-1.10.2.jar
-set CP=%CP%;%USERPROFILE%\.m2\repository\org\junit\platform\junit-platform-engine\1.10.2\junit-platform-engine-1.10.2.jar
-set CP=%CP%;%USERPROFILE%\.m2\repository\org\junit\platform\junit-platform-commons\1.10.2\junit-platform-commons-1.10.2.jar
-set CP=%CP%;%USERPROFILE%\.m2\repository\org\opentest4j\opentest4j\1.3.0\opentest4j-1.3.0.jar
-mkdir tmp_r 2>nul
-%JAVAC% -cp %CP% -d tmp_r RunTests.java 2>nul
-%JAVA% -cp tmp_r;%CP% RunTests
-rmdir /S /Q tmp_r
+REM Updated to use TestRunner from build_and_test.bat output
+set JB=C:\PROGRA~1\ECLIPS~1\JDK-17~1.10-\bin
+set M2=%USERPROFILE%\.m2\repository
+set JP=%M2%\org\junit\jupiter\junit-jupiter-api\5.10.2\junit-jupiter-api-5.10.2.jar
+set JE=%M2%\org\junit\jupiter\junit-jupiter-engine\5.10.2\junit-jupiter-engine-5.10.2.jar
+set PC=%M2%\org\junit\platform\junit-platform-commons\1.10.2\junit-platform-commons-1.10.2.jar
+set PE=%M2%\org\junit\platform\junit-platform-engine\1.10.2\junit-platform-engine-1.10.2.jar
+set PL=%M2%\org\junit\platform\junit-platform-launcher\1.10.2\junit-platform-launcher-1.10.2.jar
+set OT=%M2%\org\opentest4j\opentest4j\1.3.0\opentest4j-1.3.0.jar
+set JARS=%JP%;%JE%;%PC%;%PE%;%PL%;%OT%
+
+echo Running tests via TestRunner...
+%JB%\java.exe -cp "out;%JARS%;src\test\resources" com.kungfuchess.TestRunner
+

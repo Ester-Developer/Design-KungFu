@@ -1,5 +1,6 @@
 package com.kungfuchess.engine;
 
+import com.kungfuchess.bus.EventBus;
 import com.kungfuchess.input.BoardMapper;
 import com.kungfuchess.io.BoardParser;
 import com.kungfuchess.model.Board;
@@ -41,6 +42,7 @@ public class GameEngine {
     private String turn = "white";
     private com.kungfuchess.input.Controller controller;
     private static final RuleEngine RULE_ENGINE = new RuleEngine();
+    private final EventBus eventBus;
 
     // Score per color (material points accumulated from captures)
     private int scoreWhite = 0;
@@ -65,6 +67,32 @@ public class GameEngine {
         this.board    = Board.createStandard();
         this.arbiter  = new RealTimeArbiter();
         this.gameOver = false;
+        this.eventBus = new EventBus();
+        publishGameStarted();
+    }
+
+    /**
+     * Initializes the engine with a custom event bus.
+     *
+     * @param eventBus the event bus to use for publishing events
+     */
+    public GameEngine(EventBus eventBus) {
+        this.board    = Board.createStandard();
+        this.arbiter  = new RealTimeArbiter();
+        this.gameOver = false;
+        this.eventBus = eventBus;
+        publishGameStarted();
+    }
+
+    /**
+     * @return the event bus used by this engine
+     */
+    public EventBus getEventBus() {
+        return eventBus;
+    }
+
+    private void publishGameStarted() {
+        eventBus.publish(EventBus.GAME_STARTED, "Game started");
     }
 
     /**
@@ -112,6 +140,19 @@ public class GameEngine {
      * @return the outcome, with a stable machine-readable reason
      * @throws Board.OutOfBoundsException if either position is out of bounds
      */
+    /**
+     * Records a rejection-flash for {@code dest} without going through {@link #requestMove}.
+     * For rejections decided outside the engine (e.g. a server rejecting a move because the
+     * connection doesn't own that piece's color) — gives the same red-square feedback as an
+     * engine-validated rejection.
+     *
+     * @param dest the square to flash
+     */
+    public void recordRejection(Position dest) {
+        lastRejectedDest = dest;
+        rejectedAtClock  = arbiter.getClock();
+    }
+
     public MoveResult requestMove(Position from, Position to) throws Board.OutOfBoundsException {
         // (a) game_over
         if (gameOver) {
@@ -232,6 +273,7 @@ public class GameEngine {
             if (captured != null && "King".equals(captured.getKind())) {
                 gameOver = true;
                 winner   = event.piece().getColor(); // the capturer wins
+                eventBus.publish(EventBus.GAME_ENDED, "Game ended, winner: " + winner);
             }
 
             // Update score: the capturing player is the mover (event.piece().getColor())
@@ -242,10 +284,16 @@ public class GameEngine {
                 } else {
                     scoreBlack += points;
                 }
+                eventBus.publish(EventBus.SCORE_UPDATED, 
+                    event.piece().getColor() + " score: " + 
+                    ("white".equals(event.piece().getColor()) ? scoreWhite : scoreBlack) + 
+                    " (+" + points + " for capturing " + captured.getKind() + ")");
             }
 
             // Append structured move log entry
-            moveLog.add(buildLogEntry(event));
+            GameSnapshot.MoveLogEntry logEntry = buildLogEntry(event);
+            moveLog.add(logEntry);
+            eventBus.publish(EventBus.MOVE_LOGGED, logEntry);
         }
         return events;
     }
@@ -325,6 +373,7 @@ public class GameEngine {
             Piece captured = event.capturedPiece();
             if (captured != null && "King".equals(captured.getKind())) {
                 gameOver = true;
+                eventBus.publish(EventBus.GAME_ENDED, "Game ended, winner: " + screamer.getColor());
             }
             if (captured != null) {
                 int points = PieceValues.valueOf(captured.getKind());
@@ -333,8 +382,14 @@ public class GameEngine {
                 } else {
                     scoreBlack += points;
                 }
+                eventBus.publish(EventBus.SCORE_UPDATED, 
+                    event.piece().getColor() + " score: " + 
+                    ("white".equals(event.piece().getColor()) ? scoreWhite : scoreBlack) + 
+                    " (+" + points + " for capturing " + captured.getKind() + ")");
             }
-            moveLog.add(buildLogEntry(event));
+            GameSnapshot.MoveLogEntry logEntry = buildLogEntry(event);
+            moveLog.add(logEntry);
+            eventBus.publish(EventBus.MOVE_LOGGED, logEntry);
         }
         turn = turn.equals("white") ? "black" : "white";
         return MoveResult.ok();

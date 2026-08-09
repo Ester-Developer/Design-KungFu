@@ -54,6 +54,16 @@ public class Renderer {
         imageView.setPlayerNames(white, black);
     }
 
+    /** Delegates to {@link ImageView#setLocalPlayerInfo}. */
+    public void setLocalPlayerInfo(String color, int elo) {
+        imageView.setLocalPlayerInfo(color, elo);
+    }
+
+    /** Delegates to {@link ImageView#setRoomId}. */
+    public void setRoomId(String roomId) {
+        imageView.setRoomId(roomId);
+    }
+
     /** @return the persistent label (null before first render). */
     public JLabel getLabel() { return label; }
 
@@ -61,23 +71,39 @@ public class Renderer {
     public JFrame getFrame() { return frame; }
 
     /**
-     * Renders the current game state. On the first call the window is created
-     * synchronously (blocks until the EDT has finished building it). Subsequent
-     * calls swap the icon and repaint without blocking.
+     * Renders the current game state. {@code imageView} is not thread-safe, so the
+     * whole method — not just the window-creation step — must run on the EDT. Callers
+     * may invoke this from any thread: if already on the EDT (e.g. from a Swing
+     * {@code Timer} or an {@code invokeLater} callback) it runs immediately in place;
+     * otherwise it blocks via {@code invokeAndWait} until done, so the first call is
+     * still guaranteed to leave {@code label} non-null before returning.
      */
     public void render(GameSnapshot snapshot) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            doRender(snapshot);
+        } else {
+            try {
+                SwingUtilities.invokeAndWait(() -> doRender(snapshot));
+            } catch (Exception e) {
+                System.err.println("[Renderer] ERROR in render():");
+                e.printStackTrace();
+                throw new RuntimeException("Render failed", e);
+            }
+        }
+    }
+
+    /** Actual render body — must only ever be called on the EDT (see {@link #render}). */
+    private void doRender(GameSnapshot snapshot) {
         imageView.draw(snapshot);
         BufferedImage raw = imageView.getImage();
         BufferedImage display = scaleFactor == 1.0 ? raw : scaleImage(raw, scaleFactor);
         ImageIcon icon = new ImageIcon(display);
 
         if (label == null) {
-            initWindowAndWait(icon, raw.getWidth(), raw.getHeight());
+            initWindow(icon, raw.getWidth(), raw.getHeight());
         } else {
-            SwingUtilities.invokeLater(() -> {
-                label.setIcon(icon);
-                label.repaint();
-            });
+            label.setIcon(icon);
+            label.repaint();
         }
     }
 
@@ -100,48 +126,52 @@ public class Renderer {
         return out;
     }
 
-    private void initWindowAndWait(ImageIcon icon, int rawW, int rawH) {
-        try {
-            SwingUtilities.invokeAndWait(() -> {
-                // Determine available screen space (subtract taskbar / dock insets).
-                GraphicsConfiguration gc =
-                    GraphicsEnvironment.getLocalGraphicsEnvironment()
-                                       .getDefaultScreenDevice()
-                                       .getDefaultConfiguration();
-                Rectangle screenBounds = gc.getBounds();
-                Insets    screenInsets = Toolkit.getDefaultToolkit().getScreenInsets(gc);
-                int availW = screenBounds.width  - screenInsets.left - screenInsets.right;
-                int availH = screenBounds.height - screenInsets.top  - screenInsets.bottom;
+    /** Builds the window in place. Must only be called on the EDT (see {@link #render}). */
+    private void initWindow(ImageIcon icon, int rawW, int rawH) {
+        // Determine available screen space (subtract taskbar / dock insets).
+        GraphicsConfiguration gc =
+            GraphicsEnvironment.getLocalGraphicsEnvironment()
+                               .getDefaultScreenDevice()
+                               .getDefaultConfiguration();
+        Rectangle screenBounds = gc.getBounds();
+        Insets    screenInsets = Toolkit.getDefaultToolkit().getScreenInsets(gc);
+        int availW = screenBounds.width  - screenInsets.left - screenInsets.right;
+        int availH = screenBounds.height - screenInsets.top  - screenInsets.bottom;
 
-                // Leave a small margin so the window title bar + OS chrome fit.
-                int marginW = 40;
-                int marginH = 80; // title bar ~ 30px + some breathing room
+        System.out.println("[Renderer] Screen available: " + availW + "x" + availH);
 
-                double scaleW = (double)(availW - marginW) / rawW;
-                double scaleH = (double)(availH - marginH) / rawH;
-                scaleFactor   = Math.min(1.0, Math.min(scaleW, scaleH));
+        // Leave a small margin so the window title bar + OS chrome fit.
+        int marginW = 40;
+        int marginH = 80; // title bar ~ 30px + some breathing room
 
-                // If we are scaling, replace the icon with the correctly scaled one.
-                ImageIcon displayIcon = scaleFactor < 1.0
-                    ? new ImageIcon(scaleImage(icon.getImage() instanceof BufferedImage
-                                               ? (BufferedImage) icon.getImage()
-                                               : toBufferedImage(icon), rawW, rawH, scaleFactor))
-                    : icon;
+        double scaleW = (double)(availW - marginW) / rawW;
+        double scaleH = (double)(availH - marginH) / rawH;
+        scaleFactor   = Math.min(1.0, Math.min(scaleW, scaleH));
 
-                label = new JLabel(displayIcon);
-                frame = new JFrame("KF-Chess");
-                frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-                // Use the label as the content pane so MouseEvent coordinates
-                // from the label are always (0,0)-based with no inset offset.
-                frame.setContentPane(label);
-                frame.pack();
-                frame.setResizable(false);
-                frame.setLocationRelativeTo(null);
-                frame.setVisible(true);
-            });
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to initialise game window", e);
-        }
+        System.out.println("[Renderer] Scale factor: " + scaleFactor);
+
+        // If we are scaling, replace the icon with the correctly scaled one.
+        ImageIcon displayIcon = scaleFactor < 1.0
+            ? new ImageIcon(scaleImage(icon.getImage() instanceof BufferedImage
+                                       ? (BufferedImage) icon.getImage()
+                                       : toBufferedImage(icon), rawW, rawH, scaleFactor))
+            : icon;
+
+        System.out.println("[Renderer] Creating JLabel...");
+        label = new JLabel(displayIcon);
+        System.out.println("[Renderer] Creating JFrame...");
+        frame = new JFrame("KF-Chess");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        // Use the label as the content pane so MouseEvent coordinates
+        // from the label are always (0,0)-based with no inset offset.
+        frame.setContentPane(label);
+        System.out.println("[Renderer] Packing frame...");
+        frame.pack();
+        frame.setResizable(false);
+        frame.setLocationRelativeTo(null);
+        System.out.println("[Renderer] Calling frame.setVisible(true)...");
+        frame.setVisible(true);
+        System.out.println("[Renderer] Window setVisible(true) called! Frame should be visible now.");
     }
 
     /** Helper: scale an already-loaded image back from a BufferedImage, given raw dimensions. */

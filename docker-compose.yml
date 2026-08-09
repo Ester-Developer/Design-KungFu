@@ -1,16 +1,21 @@
-# Phase 2 infra: Redis, PostgreSQL, NATS — the generic, off-the-shelf pieces of the
-# scaled architecture described in Server_Design.md. The application services
-# themselves (API Gateway, WS Gateway, Matchmaker, Game Allocator, Game Server
-# Shard) are plain Java processes (see run_*.bat) — they are not containerized yet
-# in this "small working thing first" pass; they connect to these containers over
-# localhost. Containerizing the Java services is the natural next step once this
-# slice is proven end-to-end.
+# The full scaled architecture (Server_Design.md §3): Redis/PostgreSQL/NATS infra
+# plus all six Java services, each built from the same image (Dockerfile) and
+# distinguished only by MAIN_CLASS — this is the "small working thing" docker-compose
+# deployment the course asked for; `docker compose up --build` brings up everything
+# needed for a GUI client (run_cloud_client.bat, outside Docker) to log in, play a
+# room-code game or Quick Match, and see ELO/history persisted.
+#
+# Only ONE Game Server Shard is defined here (Server_Design.md's rollout step 1).
+# Adding a second is mostly copy/paste — see the comment on `game-shard` below for
+# the one thing (SHARD_PUBLIC_HOST/port) that needs to differ per shard.
 services:
   redis:
     image: redis:7-alpine
     # Host port 6380 (not 6379): this machine already has an unrelated, password-
     # protected Redis container long-running on 6379 — left untouched rather than
-    # reusing or restarting it. Java services default to REDIS_PORT=6380 to match.
+    # reusing or restarting it. Services inside the compose network still talk to
+    # each other on the standard 6379 (REDIS_PORT below); only the host-side
+    # mapping is shifted.
     ports:
       - "6380:6379"
 
@@ -29,6 +34,95 @@ services:
     image: nats:2-alpine
     ports:
       - "4222:4222"
+
+  auth-service:
+    build: .
+    environment:
+      MAIN_CLASS: com.kungfuchess.cloud.services.AuthServiceMain
+      PG_HOST: postgres
+      PG_PORT: 5432
+    depends_on: [postgres]
+    ports:
+      - "8000:8000"
+
+  api-gateway:
+    build: .
+    environment:
+      MAIN_CLASS: com.kungfuchess.cloud.services.ApiGatewayMain
+      AUTH_HOST: auth-service
+      AUTH_PORT: 8000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PG_HOST: postgres
+      PG_PORT: 5432
+    depends_on: [redis, postgres, auth-service]
+    ports:
+      - "8080:8080"
+
+  game-allocator:
+    build: .
+    environment:
+      MAIN_CLASS: com.kungfuchess.cloud.services.GameAllocatorMain
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on: [redis]
+    ports:
+      - "8004:8004"
+
+  matchmaker:
+    build: .
+    environment:
+      MAIN_CLASS: com.kungfuchess.cloud.services.MatchmakerMain
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ALLOCATOR_HOST: game-allocator
+      ALLOCATOR_PORT: 8004
+      NATS_HOST: nats
+      NATS_PORT: 4222
+    depends_on: [redis, nats, game-allocator]
+    ports:
+      - "8003:8003"
+
+  ws-gateway:
+    build: .
+    environment:
+      MAIN_CLASS: com.kungfuchess.cloud.services.WsGatewayMain
+      WS_PORT: 5555
+      WS_HEALTH_PORT: 6555
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ALLOCATOR_HOST: game-allocator
+      ALLOCATOR_PORT: 8004
+      MATCHMAKER_HOST: matchmaker
+      MATCHMAKER_PORT: 8003
+      NATS_HOST: nats
+      NATS_PORT: 4222
+    depends_on: [redis, nats, game-allocator, matchmaker]
+    ports:
+      - "5555:5555"
+      - "6555:6555"
+
+  game-shard:
+    build: .
+    environment:
+      MAIN_CLASS: com.kungfuchess.cloud.services.GameShardMain
+      SHARD_PORT: 5556
+      SHARD_HEALTH_PORT: 6556
+      # The GUI client runs on the host, outside this compose network, and
+      # connects directly to whichever shard the WS Gateway/Matchmaker redirects
+      # it to — so the *advertised* host must be resolvable from the host
+      # machine, not the container network. For a second shard: pick a free host
+      # port (e.g. 5557), map it below, and set SHARD_PORT/SHARD_PUBLIC_HOST's
+      # port to match.
+      SHARD_PUBLIC_HOST: localhost
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PG_HOST: postgres
+      PG_PORT: 5432
+    depends_on: [redis, postgres]
+    ports:
+      - "5556:5556"
+      - "6556:6556"
 
 volumes:
   kfc-pg:

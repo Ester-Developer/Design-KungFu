@@ -45,41 +45,41 @@ Log in (an account is created automatically on first login), then either hit **P
 <table>
 <tr>
 <td align="center" width="50%">
-<img src="docs/images/welcome-splash.png" alt="Welcome screen" width="100%"><br>
+<img src="https://raw.githubusercontent.com/Ester-Developer/Design-KungFu/main/docs/images/welcome-splash.png" alt="Welcome screen" width="100%"><br>
 <sub>Welcome screen</sub>
 </td>
 <td align="center" width="50%">
-<img src="docs/images/home-menu.png" alt="Home menu" width="100%"><br>
+<img src="https://raw.githubusercontent.com/Ester-Developer/Design-KungFu/main/docs/images/home-menu.png" alt="Home menu" width="100%"><br>
 <sub>Play or open a Room</sub>
 </td>
 </tr>
 <tr>
 <td align="center">
-<img src="docs/images/room-dialog.png" alt="Room dialog" width="100%"><br>
+<img src="https://raw.githubusercontent.com/Ester-Developer/Design-KungFu/main/docs/images/room-dialog.png" alt="Room dialog" width="100%"><br>
 <sub>Create or join a room by code</sub>
 </td>
 <td align="center">
-<img src="docs/images/quick-match-searching.png" alt="Quick match searching" width="100%"><br>
+<img src="https://raw.githubusercontent.com/Ester-Developer/Design-KungFu/main/docs/images/quick-match-searching.png" alt="Quick match searching" width="100%"><br>
 <sub>ELO-based quick matchmaking</sub>
 </td>
 </tr>
 <tr>
 <td align="center">
-<img src="docs/images/match-start.png" alt="Match start" width="100%"><br>
+<img src="https://raw.githubusercontent.com/Ester-Developer/Design-KungFu/main/docs/images/match-start.png" alt="Match start" width="100%"><br>
 <sub>A fresh match — room code, players, and live ELO shown</sub>
 </td>
 <td align="center">
-<img src="docs/images/cooldown-overlay.png" alt="Piece cooldown overlay" width="100%"><br>
+<img src="https://raw.githubusercontent.com/Ester-Developer/Design-KungFu/main/docs/images/cooldown-overlay.png" alt="Piece cooldown overlay" width="100%"><br>
 <sub>Per-piece cooldown overlay after a move</sub>
 </td>
 </tr>
 <tr>
 <td align="center">
-<img src="docs/images/match-in-progress.png" alt="Match in progress" width="100%"><br>
+<img src="https://raw.githubusercontent.com/Ester-Developer/Design-KungFu/main/docs/images/match-in-progress.png" alt="Match in progress" width="100%"><br>
 <sub>Live move log for both players</sub>
 </td>
 <td align="center">
-<img src="docs/images/game-over.png" alt="Game over" width="100%"><br>
+<img src="https://raw.githubusercontent.com/Ester-Developer/Design-KungFu/main/docs/images/game-over.png" alt="Game over" width="100%"><br>
 <sub>Game over — capture the king to win</sub>
 </td>
 </tr>

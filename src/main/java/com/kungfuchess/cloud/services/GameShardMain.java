@@ -19,6 +19,7 @@ import com.kungfuchess.net.DodgeMessage;
 import com.kungfuchess.net.ErrorMessage;
 import com.kungfuchess.net.MoveMessage;
 import com.kungfuchess.net.MoveNotation;
+import com.kungfuchess.net.RoomInfoMessage;
 import com.kungfuchess.net.ScreamMessage;
 import com.kungfuchess.net.ShardJoinMessage;
 import com.kungfuchess.realtime.Motion;
@@ -202,13 +203,15 @@ public class GameShardMain extends WebSocketServer {
         session.setRoom(room);
         sessions.put(conn, session);
 
+        boolean justStarted;
         synchronized (room) {
             if (isWhite) {
                 room.setWhite(session);
             } else {
                 room.setBlack(session);
             }
-            if (room.getWhite() != null && room.getBlack() != null && !room.isStarted()) {
+            justStarted = room.getWhite() != null && room.getBlack() != null && !room.isStarted();
+            if (justStarted) {
                 room.setStarted(true);
                 roomStartedAtMs.put(room.getRoomId(), System.currentTimeMillis());
                 activeRooms.incrementAndGet();
@@ -216,6 +219,25 @@ public class GameShardMain extends WebSocketServer {
                         payload -> handleGameEnded(room, payload));
                 System.out.println("[GameShard] room " + room.getRoomId() + " started: "
                         + room.getWhite().getUsername() + " vs " + room.getBlack().getUsername());
+            }
+        }
+
+        // The client's colorLatch/onColorAssigned callback (see CloudClientMain,
+        // mirroring the Phase 1 flow) only ever fires off a RoomInfoMessage — without
+        // this, a client that just joined the shard would wait forever, never seeing
+        // its own color or the game window.
+        String whiteName = room.getWhite() != null ? room.getWhite().getUsername() : "Waiting...";
+        String blackName = room.getBlack() != null ? room.getBlack().getUsername() : "Waiting...";
+        conn.send(gson.toJson(new RoomInfoMessage(
+                room.getRoomId(), session.getColor(), whiteName, blackName, room.isStarted())));
+
+        if (justStarted) {
+            // The player who was already waiting still has stale "Waiting..." names
+            // in their UI until they hear the room actually started.
+            ServerSession other = isWhite ? room.getBlack() : room.getWhite();
+            if (other != null && other.getConnection() != conn && other.getConnection().isOpen()) {
+                other.getConnection().send(gson.toJson(new RoomInfoMessage(
+                        room.getRoomId(), other.getColor(), whiteName, blackName, true)));
             }
         }
 

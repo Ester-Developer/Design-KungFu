@@ -68,11 +68,30 @@
       <artifactId>gson</artifactId>
       <version>2.11.0</version>
     </dependency>
-    <!-- SQLite JDBC for user authentication -->
+    <!-- SQLite JDBC for user authentication (Phase 1 single-process server) -->
     <dependency>
       <groupId>org.xerial</groupId>
       <artifactId>sqlite-jdbc</artifactId>
       <version>3.46.1.0</version>
+    </dependency>
+    <!-- Redis client — Phase 2 scaled architecture: session tokens, room->shard
+         registry, matchmaking queue, shard heartbeats (see Server_Design.md) -->
+    <dependency>
+      <groupId>redis.clients</groupId>
+      <artifactId>jedis</artifactId>
+      <version>5.1.0</version>
+    </dependency>
+    <!-- PostgreSQL JDBC driver — Phase 2 durable storage (users, games, results) -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>42.7.3</version>
+    </dependency>
+    <!-- NATS client — Phase 2 internal control-plane event bus (matched/allocated) -->
+    <dependency>
+      <groupId>io.nats</groupId>
+      <artifactId>jnats</artifactId>
+      <version>2.17.6</version>
     </dependency>
   </dependencies>
 

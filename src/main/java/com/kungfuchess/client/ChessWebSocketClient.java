@@ -26,6 +26,8 @@ import com.kungfuchess.net.RoomInfoMessage;
 import com.kungfuchess.net.RoomJoinMessage;
 import com.kungfuchess.net.ScreamMessage;
 import com.kungfuchess.net.ServerFullMessage;
+import com.kungfuchess.net.ShardConnectMessage;
+import com.kungfuchess.net.TokenMessage;
 import com.kungfuchess.realtime.Motion;
 import com.kungfuchess.view.Renderer;
 import com.kungfuchess.view.SoundManager;
@@ -65,6 +67,7 @@ public class ChessWebSocketClient extends WebSocketClient {
     private Consumer<RoomInfoMessage> onRoomInfo;
     private Consumer<String> onRoomError;
     private Runnable onNoMatch;
+    private Consumer<ShardConnectMessage> onShardConnect;
     private String currentRoomId;
     private java.util.function.IntConsumer onOpponentDisconnectedCountdown;
     private Consumer<String> onGameOver;
@@ -207,6 +210,16 @@ public class ChessWebSocketClient extends WebSocketClient {
     public boolean isOpponentPresent() {
         return opponentJoinedFired;
     }
+
+    /**
+     * Sets callback fired when the WS Gateway (Phase 2 scaled architecture) redirects
+     * this connection to a Game Server Shard. The caller is responsible for closing
+     * this connection and opening a new {@code ChessWebSocketClient} to
+     * {@link ShardConnectMessage#getShardUrl()}, sending a ShardJoinMessage first.
+     */
+    public void setOnShardConnect(Consumer<ShardConnectMessage> callback) {
+        this.onShardConnect = callback;
+    }
     
     /**
      * Sets callback for when a move is made via mouse click (GUI mode).
@@ -267,6 +280,9 @@ public class ChessWebSocketClient extends WebSocketClient {
                     break;
                 case "ROOM_INFO":
                     handleRoomInfo(message);
+                    break;
+                case "SHARD_CONNECT":
+                    handleShardConnect(message);
                     break;
                 case "ROOM_ERROR":
                     handleRoomError(message);
@@ -768,6 +784,15 @@ public class ChessWebSocketClient extends WebSocketClient {
         }
     }
 
+    private void handleShardConnect(String message) {
+        ShardConnectMessage msg = gson.fromJson(message, ShardConnectMessage.class);
+        System.out.println("[Client] Redirected to shard: " + msg.getShardUrl() + " room=" + msg.getRoomId());
+        currentRoomId = msg.getRoomId();
+        if (onShardConnect != null) {
+            onShardConnect.accept(msg);
+        }
+    }
+
     private void handleServerFull(String message) {
         ServerFullMessage msg = gson.fromJson(message, ServerFullMessage.class);
         System.err.println("[Client] Server is full (max 2 players). Connection will be closed.");
@@ -870,6 +895,22 @@ public class ChessWebSocketClient extends WebSocketClient {
         String json = gson.toJson(msg);
         send(json);
         System.out.println("[Client] Sent login with username: " + username);
+    }
+
+    /**
+     * Sends the session token handshake (Phase 2 scaled architecture): the first
+     * message on a WS Gateway or Game Shard connection, replacing {@link #sendLogin}
+     * for that architecture (auth already happened over REST against the API Gateway).
+     */
+    public void sendToken(String token, String username, int elo) {
+        send(gson.toJson(new TokenMessage(token, username, elo)));
+        System.out.println("[Client] Sent token handshake for " + username);
+    }
+
+    /** Sends the shard-join handshake after a {@link ShardConnectMessage} redirect. */
+    public void sendShardJoin(String roomId, String token, String color) {
+        send(gson.toJson(new com.kungfuchess.net.ShardJoinMessage(roomId, token, color)));
+        System.out.println("[Client] Sent shard join for room " + roomId);
     }
 
     /**

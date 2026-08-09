@@ -1,0 +1,34 @@
+# Phase 2 infra: Redis, PostgreSQL, NATS — the generic, off-the-shelf pieces of the
+# scaled architecture described in Server_Design.md. The application services
+# themselves (API Gateway, WS Gateway, Matchmaker, Game Allocator, Game Server
+# Shard) are plain Java processes (see run_*.bat) — they are not containerized yet
+# in this "small working thing first" pass; they connect to these containers over
+# localhost. Containerizing the Java services is the natural next step once this
+# slice is proven end-to-end.
+services:
+  redis:
+    image: redis:7-alpine
+    # Host port 6380 (not 6379): this machine already has an unrelated, password-
+    # protected Redis container long-running on 6379 — left untouched rather than
+    # reusing or restarting it. Java services default to REDIS_PORT=6380 to match.
+    ports:
+      - "6380:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kfc
+      POSTGRES_PASSWORD: kfc
+      POSTGRES_DB: kfc
+    ports:
+      - "5432:5432"
+    volumes:
+      - kfc-pg:/var/lib/postgresql/data
+
+  nats:
+    image: nats:2-alpine
+    ports:
+      - "4222:4222"
+
+volumes:
+  kfc-pg:

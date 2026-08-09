@@ -12,7 +12,12 @@ set SL_API=%M2%\org\slf4j\slf4j-api\2.0.9\slf4j-api-2.0.9.jar
 set SL_SIMPLE=%M2%\org\slf4j\slf4j-simple\2.0.9\slf4j-simple-2.0.9.jar
 set GSON=%M2%\com\google\code\gson\gson\2.11.0\gson-2.11.0.jar
 set SQLITE=%M2%\org\xerial\sqlite-jdbc\3.46.1.0\sqlite-jdbc-3.46.1.0.jar
-set JARS=%JP%;%JE%;%PC%;%PE%;%PL%;%OT%;%WS%;%SL_API%;%SL_SIMPLE%;%GSON%;%SQLITE%
+set JEDIS=%M2%\redis\clients\jedis\5.1.0\jedis-5.1.0.jar
+set POOL2=%M2%\org\apache\commons\commons-pool2\2.12.0\commons-pool2-2.12.0.jar
+set PG=%M2%\org\postgresql\postgresql\42.7.3\postgresql-42.7.3.jar
+set NATS=%M2%\io\nats\jnats\2.17.6\jnats-2.17.6.jar
+set CHECKQ=%M2%\org\checkerframework\checker-qual\3.42.0\checker-qual-3.42.0.jar
+set JARS=%JP%;%JE%;%PC%;%PE%;%PL%;%OT%;%WS%;%SL_API%;%SL_SIMPLE%;%GSON%;%SQLITE%;%JEDIS%;%POOL2%;%PG%;%NATS%;%CHECKQ%
 
 rmdir /s /q out 2>nul
 mkdir out
@@ -38,6 +43,9 @@ echo [1/3] Compiling main sources...
   src\main\java\com\kungfuchess\net\BoardSerializer.java ^
   src\main\java\com\kungfuchess\net\RoomCreateMessage.java ^
   src\main\java\com\kungfuchess\net\RoomJoinMessage.java ^
+  src\main\java\com\kungfuchess\net\TokenMessage.java ^
+  src\main\java\com\kungfuchess\net\ShardConnectMessage.java ^
+  src\main\java\com\kungfuchess\net\ShardJoinMessage.java ^
   src\main\java\com\kungfuchess\net\RoomInfoMessage.java ^
   src\main\java\com\kungfuchess\net\RoomErrorMessage.java ^
   src\main\java\com\kungfuchess\server\ServerSession.java ^
@@ -47,10 +55,19 @@ echo [1/3] Compiling main sources...
   src\main\java\com\kungfuchess\server\ChessWebSocketServer.java ^
   src\main\java\com\kungfuchess\server\ServerMain.java ^
   src\main\java\com\kungfuchess\util\ActivityLogger.java ^
+  src\main\java\com\kungfuchess\cloud\infra\RedisRegistry.java ^
+  src\main\java\com\kungfuchess\cloud\infra\HttpJson.java ^
+  src\main\java\com\kungfuchess\cloud\infra\PostgresUserRepository.java ^
+  src\main\java\com\kungfuchess\cloud\services\AuthServiceMain.java ^
+  src\main\java\com\kungfuchess\cloud\services\ApiGatewayMain.java ^
+  src\main\java\com\kungfuchess\cloud\services\GameAllocatorMain.java ^
+  src\main\java\com\kungfuchess\cloud\services\GameShardMain.java ^
+  src\main\java\com\kungfuchess\cloud\services\WsGatewayMain.java ^
   src\main\java\com\kungfuchess\client\ChessWebSocketClient.java ^
   src\main\java\com\kungfuchess\client\ClientMain.java ^
   src\main\java\com\kungfuchess\client\LoginWindow.java ^
   src\main\java\com\kungfuchess\client\GameOverlayPanel.java ^
+  src\main\java\com\kungfuchess\client\CloudClientMain.java ^
   src\main\java\com\kungfuchess\client\TestClient.java ^
   src\main\java\com\kungfuchess\engine\GameEngine.java ^
   src\main\java\com\kungfuchess\input\BoardMapper.java ^

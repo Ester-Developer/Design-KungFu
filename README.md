@@ -235,7 +235,7 @@ kubectl get pods -n kfchess -w
 
 `api-gateway`, `ws-gateway`, and `game-shard` are `LoadBalancer` Services (client-facing — on Docker Desktop's local Kubernetes these publish to `localhost` on their usual ports, same as Docker Compose); the rest are `ClusterIP` (internal-only), mirroring the reachability split already made in `docker-compose.yml`.
 
-> **Status:** these manifests are structurally validated (every `Service` selector matches its `Deployment`'s pod labels, YAML parses cleanly) but have not yet been exercised against a live cluster in this environment — see `Server_Design.md`'s rollout plan for what's next. Only `game-shard` needs special care when scaling past one replica: each shard needs its own externally-reachable address (the comment at the top of `k8s/25-game-shard.yaml` explains why that's a second Deployment+Service, not `replicas: N`).
+> **Status:** deployed and verified against a live local cluster (`kind`, via Docker Desktop) — all 9 pods reach `Running`/`Ready`, and a concurrent load test against the cluster's `LoadBalancer` addresses succeeded across both room-code and Quick Match flows. If your cluster has no `LoadBalancer` controller (`kubectl get svc -n kfchess` shows `<pending>` under `EXTERNAL-IP`), use `kubectl port-forward` instead, e.g. `kubectl port-forward -n kfchess svc/api-gateway 8080:8080`. Only `game-shard` needs special care when scaling past one replica: each shard needs its own externally-reachable address (the comment at the top of `k8s/25-game-shard.yaml` explains why that's a second Deployment+Service, not `replicas: N`).
 
 ---
 

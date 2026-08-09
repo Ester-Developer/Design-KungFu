@@ -3,7 +3,6 @@ package com.kungfuchess.view;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -51,7 +50,9 @@ public final class PieceConfig {
     }
 
     private static final String BASE = "src/main/resources/pieces/";
-    private static final Map<String, StateConfig> CACHE = new HashMap<>();
+    // ConcurrentHashMap: populated both by the render thread on demand and by
+    // ImageView.preloadAllPieceAssets() running on a background warm-up thread.
+    private static final Map<String, StateConfig> CACHE = new java.util.concurrent.ConcurrentHashMap<>();
 
     private PieceConfig() {}
 

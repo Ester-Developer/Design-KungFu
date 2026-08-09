@@ -131,8 +131,10 @@ public class ImageView {
     private Img sidebarBg;
     private final Img[] cooldownFrames = new Img[11]; // indices 0..10 → 0%..100%
 
-    // Frame cache: "{code}_{state}_{frameNum}" -> Img
-    private final Map<String, Img> frameCache = new HashMap<>();
+    // Frame cache: "{code}_{state}_{frameNum}" -> Img. ConcurrentHashMap because
+    // preloadAllPieceAssets() populates it from a background thread while the
+    // rendering thread may already be reading/populating it too.
+    private final Map<String, Img> frameCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     // Per-piece animator, keyed by stable string id.
     // In-flight: "pieceCode@fromPosition"; stationary: "pieceCode@currentPosition".
@@ -810,11 +812,39 @@ public class ImageView {
         String code  = PieceConfig.pieceCode(kind, color);
         String state = anim.currentStateName();
         int    frame = anim.currentFrame();
-        String key   = code + "_" + state + "_" + frame;
+        return loadFrame(code, state, frame);
+    }
 
+    private Img loadFrame(String code, String state, int frame) {
+        String key = code + "_" + state + "_" + frame;
         return frameCache.computeIfAbsent(key, k ->
             new Img().read(PIECE_ASSETS + code + "/states/" + state + "/sprites/" + frame + ".png",
                            new Dimension(CELL, CELL), true, null));
+    }
+
+    /**
+     * Decodes and caches every piece/state/frame sprite up front, plus the shared
+     * tile/cooldown assets. Each combination is normally loaded lazily on first use
+     * (see {@link #currentFrame}), which means the first few real moves of a game —
+     * whichever piece/state combos happen to come up first — pay a noticeable disk
+     * I/O + image-scaling cost right in the middle of live play. Calling this once,
+     * off the rendering thread, before the game actually starts avoids that stutter.
+     */
+    public void preloadAllPieceAssets() {
+        ensureAssetsLoaded();
+        String[] kinds = { "Pawn", "Knight", "Bishop", "Rook", "Queen", "King" };
+        String[] colors = { "white", "black" };
+        for (String color : colors) {
+            for (String kind : kinds) {
+                String code = PieceConfig.pieceCode(kind, color);
+                for (PieceState state : PieceState.values()) {
+                    int frameCount = PieceConfig.get(code, state.folderName).frameCount;
+                    for (int frame = 1; frame <= frameCount; frame++) {
+                        loadFrame(code, state.folderName, frame);
+                    }
+                }
+            }
+        }
     }
 
     // =========================================================================

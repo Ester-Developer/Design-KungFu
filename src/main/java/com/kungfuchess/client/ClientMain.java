@@ -226,6 +226,12 @@ public class ClientMain {
         CountDownLatch opponentLatch = new CountDownLatch(1);
         String[] assignedColor = new String[1];
 
+        // Built early and warmed up on a background thread right away, so piece
+        // sprites are already decoded by the time the game actually starts instead
+        // of stuttering through the first few moves while each one loads lazily.
+        Renderer renderer = new Renderer();
+        renderer.preloadAssetsAsync();
+
         client.setOnColorAssigned(color -> {
             assignedColor[0] = color;
             colorLatch.countDown();
@@ -280,7 +286,6 @@ public class ClientMain {
         }
         loginWindow.hideWindow(); // stays alive for next time — unlike close(), which disposes it
 
-        Renderer renderer = new Renderer();
         CompletableFuture<Boolean> nextAction = new CompletableFuture<>();
         try {
             initGameWindow(client, renderer, assignedColor[0], username, nextAction);

@@ -49,6 +49,20 @@ public class Renderer {
     /** @see #rawX(int) */
     public int rawY(int displayY) { return (int) Math.round(displayY / scaleFactor); }
 
+    /**
+     * Kicks off {@link ImageView#preloadAllPieceAssets()} on a background thread.
+     * Call this as early as possible (e.g. right after construction, while the
+     * client is still logging in / waiting for an opponent) so piece sprites are
+     * already decoded and cached by the time the first real moves happen — otherwise
+     * that decoding happens lazily on first use, which is what made the first few
+     * seconds of a game visibly stutter.
+     */
+    public void preloadAssetsAsync() {
+        Thread t = new Thread(imageView::preloadAllPieceAssets, "asset-preload");
+        t.setDaemon(true);
+        t.start();
+    }
+
     /** Delegates to {@link ImageView#setPlayerNames}. */
     public void setPlayerNames(String white, String black) {
         imageView.setPlayerNames(white, black);

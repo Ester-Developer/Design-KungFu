@@ -131,6 +131,20 @@ public class ImageView {
     private Img sidebarBg;
     private final Img[] cooldownFrames = new Img[11]; // indices 0..10 → 0%..100%
 
+    // Illegal-move rejection flash: held client-side for a minimum duration so it's
+    // always visible, regardless of server tick timing. The server only ever sends
+    // rejectedDest in a single, immediately-cleared, privately-addressed snapshot
+    // (see GameShardMain#rejectPrivately / ChessWebSocketServer#rejectPrivately) —
+    // how long *that* message survives before the next regular board-state update
+    // overwrites it depends on where in the ~150ms tick cycle the illegal move
+    // happened to land, which could be anywhere from nearly the full 150ms down to
+    // a handful of milliseconds. Latching it here for a fixed minimum fixes that
+    // without touching the server's privacy logic (this is purely local display
+    // state — it never affects what's sent to the opponent).
+    private static final long REJECTION_FLASH_MS = 400;
+    private Position pendingRejection;
+    private long rejectionExpiresAtMs;
+
     // Frame cache: "{code}_{state}_{frameNum}" -> Img. ConcurrentHashMap because
     // preloadAllPieceAssets() populates it from a background thread while the
     // rendering thread may already be reading/populating it too.
@@ -276,6 +290,12 @@ public class ImageView {
         Position sel   = snapshot.selectedCell();
         long     clock = snapshot.clock();
 
+        if (snapshot.rejectedDest() != null) {
+            pendingRejection = snapshot.rejectedDest();
+            rejectionExpiresAtMs = System.currentTimeMillis() + REJECTION_FLASH_MS;
+        }
+        Position rej = System.currentTimeMillis() < rejectionExpiresAtMs ? pendingRejection : null;
+
         // Tiles + coordinate labels + selection highlight + rejection flash
         for (int row = 0; row < snapshot.boardHeight(); row++) {
             for (int col = 0; col < snapshot.boardWidth(); col++) {
@@ -284,7 +304,6 @@ public class ImageView {
                 if (sel != null && sel.getRow() == row && sel.getCol() == col) {
                     highlight.drawOn(canvas, px, py);
                 }
-                Position rej = snapshot.rejectedDest();
                 if (rej != null && rej.getRow() == row && rej.getCol() == col) {
                     Graphics2D g = canvas.get().createGraphics();
                     g.setColor(COL_REJECTED);

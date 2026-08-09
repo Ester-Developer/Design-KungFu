@@ -33,9 +33,10 @@ import java.util.concurrent.CountDownLatch;
  *
  * <p>Usage: {@code java ... CloudClientMain --host localhost --ws-port 5555 --api-port 8080}</p>
  *
- * <p>Quick Match isn't wired up yet in this pass (no Matchmaker/Game Allocator
- * queue service running) — only Room create/join. See Server_Design.md's rollout
- * plan for the next step.</p>
+ * <p>Both Room (create/join by code) and Quick Match are wired up: Quick Match
+ * sends {@code PLAY} to the WS Gateway, which queues the player with the
+ * Matchmaker and — once paired — receives the same {@link ShardConnectMessage}
+ * redirect as the room flow, delivered over a per-user NATS subject.</p>
  */
 public class CloudClientMain {
 
@@ -113,8 +114,8 @@ public class CloudClientMain {
 
         LoginWindow.HomeHandler homeHandler = new LoginWindow.HomeHandler() {
             @Override public void onPlay() {
-                loginWindow.showHomeScreen(auth.username, this,
-                        "Quick Match isn't available yet in this build — use Room.");
+                gatewayClient.sendPlayRequest();
+                loginWindow.showSearching();
             }
             @Override public void onCreateRoom() {
                 gatewayClient.sendRoomCreate();

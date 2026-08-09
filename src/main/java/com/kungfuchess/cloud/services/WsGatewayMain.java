@@ -5,18 +5,22 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.kungfuchess.cloud.infra.HttpJson;
 import com.kungfuchess.cloud.infra.RedisRegistry;
-import com.kungfuchess.net.RoomCreateMessage;
 import com.kungfuchess.net.RoomErrorMessage;
 import com.kungfuchess.net.RoomInfoMessage;
 import com.kungfuchess.net.RoomJoinMessage;
 import com.kungfuchess.net.ShardConnectMessage;
 import com.kungfuchess.net.TokenMessage;
 import com.kungfuchess.util.ActivityLogger;
+import io.nats.client.Connection;
+import io.nats.client.Dispatcher;
+import io.nats.client.Nats;
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -41,16 +45,22 @@ public class WsGatewayMain extends WebSocketServer {
     private final SecureRandom random = new SecureRandom();
     private final RedisRegistry redis;
     private final String allocatorUrl;
+    private final String matchmakerUrl;
+    private final Connection nats;
+    private final Dispatcher natsDispatcher;
     private final ExecutorService waiters = Executors.newCachedThreadPool();
 
     private final ConcurrentHashMap<WebSocket, String> usernameOf = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<WebSocket, Integer> eloOf = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, WebSocket> pendingByUsername = new ConcurrentHashMap<>();
 
-    public WsGatewayMain(int port, RedisRegistry redis, String allocatorUrl) {
+    public WsGatewayMain(int port, RedisRegistry redis, String allocatorUrl, String matchmakerUrl, Connection nats) {
         super(new InetSocketAddress(port));
         this.redis = redis;
         this.allocatorUrl = allocatorUrl;
+        this.matchmakerUrl = matchmakerUrl;
+        this.nats = nats;
+        this.natsDispatcher = nats.createDispatcher();
     }
 
     public static void main(String[] args) throws Exception {
@@ -60,12 +70,29 @@ public class WsGatewayMain extends WebSocketServer {
         int redisPort = Integer.parseInt(System.getenv().getOrDefault("REDIS_PORT", "6379"));
         String allocatorUrl = "http://" + System.getenv().getOrDefault("ALLOCATOR_HOST", "localhost")
                 + ":" + System.getenv().getOrDefault("ALLOCATOR_PORT", "8004");
+        String matchmakerUrl = "http://" + System.getenv().getOrDefault("MATCHMAKER_HOST", "localhost")
+                + ":" + System.getenv().getOrDefault("MATCHMAKER_PORT", "8003");
+        String natsUrl = "nats://" + System.getenv().getOrDefault("NATS_HOST", "localhost")
+                + ":" + System.getenv().getOrDefault("NATS_PORT", "4222");
+        int healthPort = Integer.parseInt(System.getenv().getOrDefault("WS_HEALTH_PORT", "6555"));
 
         RedisRegistry redis = new RedisRegistry(redisHost, redisPort);
-        WsGatewayMain gateway = new WsGatewayMain(port, redis, allocatorUrl);
+        Connection nats = Nats.connect(natsUrl);
+        WsGatewayMain gateway = new WsGatewayMain(port, redis, allocatorUrl, matchmakerUrl, nats);
         gateway.start();
-        System.out.println("[WsGateway] listening on ws://0.0.0.0:" + port + " (Allocator at " + allocatorUrl + ")");
+        gateway.startHealthServer(healthPort);
+        System.out.println("[WsGateway] listening on ws://0.0.0.0:" + port + " (Allocator at " + allocatorUrl
+                + ", Matchmaker at " + matchmakerUrl + ")");
         Thread.currentThread().join();
+    }
+
+    private void startHealthServer(int healthPort) throws IOException {
+        com.sun.net.httpserver.HttpServer health = HttpJson.start(healthPort);
+        HttpJson.get(health, "/health", (body, ex) -> Map.of("status", "ok", "service", "ws-gateway"));
+        HttpJson.get(health, "/metrics", (body, ex) -> Map.of(
+                "kfc_ws_gateway_open_connections", usernameOf.size()));
+        health.start();
+        System.out.println("[WsGateway] health/metrics on http://0.0.0.0:" + healthPort);
     }
 
     @Override
@@ -85,6 +112,7 @@ public class WsGatewayMain extends WebSocketServer {
         eloOf.remove(conn);
         if (username != null) {
             pendingByUsername.remove(username, conn);
+            natsDispatcher.unsubscribe("kfc.matched." + username);
         }
     }
 
@@ -102,6 +130,7 @@ public class WsGatewayMain extends WebSocketServer {
                 case "TOKEN" -> handleToken(conn, message);
                 case "ROOM_CREATE" -> handleRoomCreate(conn, message);
                 case "ROOM_JOIN" -> handleRoomJoin(conn, message);
+                case "PLAY" -> handleQuickMatch(conn);
                 default -> conn.send(gson.toJson(new RoomErrorMessage("Unexpected message: " + type)));
             }
         } catch (Exception e) {
@@ -168,6 +197,38 @@ public class WsGatewayMain extends WebSocketServer {
         System.out.println("[WsGateway] " + username + " joined room " + roomId + " — waiting for shard allocation");
         // The creator's own waitForOpponentThenAllocate task (already running) will
         // notice "black" is now set and send ShardConnectMessage to both of us.
+    }
+
+    // ── quick match ───────────────────────────────────────────────────────────
+
+    /**
+     * Subscribes this connection to its own NATS subject <em>before</em> asking the
+     * Matchmaker to queue it, so there's no race between "matched" firing and the
+     * subscription existing — NATS core doesn't replay missed messages.
+     */
+    private void handleQuickMatch(WebSocket conn) {
+        String username = usernameOf.get(conn);
+        Integer elo = eloOf.get(conn);
+        if (username == null || elo == null) {
+            conn.send(gson.toJson(new RoomErrorMessage("must send TOKEN first")));
+            return;
+        }
+        String subject = "kfc.matched." + username;
+        natsDispatcher.subscribe(subject, msg -> {
+            natsDispatcher.unsubscribe(subject);
+            if (!conn.isOpen()) return;
+            ShardConnectMessage shardConnect = gson.fromJson(
+                    new String(msg.getData(), StandardCharsets.UTF_8), ShardConnectMessage.class);
+            conn.send(gson.toJson(shardConnect));
+            System.out.println("[WsGateway] " + username + " quick-matched -> " + shardConnect.getShardUrl());
+        });
+        try {
+            HttpJson.postJson(matchmakerUrl + "/queue/join", Map.of("username", username, "elo", elo), Map.class);
+            System.out.println("[WsGateway] " + username + " (ELO " + elo + ") requested Quick Match");
+        } catch (Exception e) {
+            natsDispatcher.unsubscribe(subject);
+            conn.send(gson.toJson(new RoomErrorMessage("Matchmaker is unavailable. Try again.")));
+        }
     }
 
     /** Runs on a background thread — polls Redis for the room to be filled, then allocates a shard. */

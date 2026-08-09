@@ -3,6 +3,8 @@ package com.kungfuchess.cloud.services;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.kungfuchess.cloud.infra.GameHistoryRepository;
+import com.kungfuchess.cloud.infra.HttpJson;
 import com.kungfuchess.cloud.infra.PostgresUserRepository;
 import com.kungfuchess.cloud.infra.RedisRegistry;
 import com.kungfuchess.bus.EventBus;
@@ -69,22 +71,26 @@ public class GameShardMain extends WebSocketServer {
     private final Gson gson = new Gson();
     private final RedisRegistry redis;
     private final PostgresUserRepository users;
+    private final GameHistoryRepository history;
     private final String shardId;
     private final String publicHost;
     private final int port;
 
     private final ConcurrentHashMap<String, Room> waitingRooms = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ScheduledFuture<?>> disconnectCountdowns = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> roomStartedAtMs = new ConcurrentHashMap<>();
     private final AtomicInteger activeRooms = new AtomicInteger(0);
 
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(3);
 
-    public GameShardMain(int port, String publicHost, RedisRegistry redis, PostgresUserRepository users) {
+    public GameShardMain(int port, String publicHost, RedisRegistry redis, PostgresUserRepository users,
+                          GameHistoryRepository history) {
         super(new InetSocketAddress(port));
         this.port = port;
         this.publicHost = publicHost;
         this.redis = redis;
         this.users = users;
+        this.history = history;
         this.shardId = java.util.UUID.randomUUID().toString().substring(0, 8);
     }
 
@@ -96,14 +102,29 @@ public class GameShardMain extends WebSocketServer {
         int redisPort = Integer.parseInt(System.getenv().getOrDefault("REDIS_PORT", "6379"));
         String pgHost = System.getenv().getOrDefault("PG_HOST", "localhost");
         int pgPort = Integer.parseInt(System.getenv().getOrDefault("PG_PORT", "5432"));
+        int healthPort = Integer.parseInt(System.getenv().getOrDefault("SHARD_HEALTH_PORT", "6556"));
 
         RedisRegistry redis = new RedisRegistry(redisHost, redisPort);
         PostgresUserRepository users = new PostgresUserRepository(pgHost, pgPort, "kfc", "kfc", "kfc");
+        GameHistoryRepository history = new GameHistoryRepository(pgHost, pgPort, "kfc", "kfc", "kfc");
 
-        GameShardMain shard = new GameShardMain(port, publicHost, redis, users);
+        GameShardMain shard = new GameShardMain(port, publicHost, redis, users, history);
         shard.start();
+        shard.startHealthServer(healthPort);
         System.out.println("[GameShard] listening on ws://0.0.0.0:" + port + " (public: " + publicHost + ":" + port + ")");
         Thread.currentThread().join();
+    }
+
+    private void startHealthServer(int healthPort) throws java.io.IOException {
+        com.sun.net.httpserver.HttpServer health = HttpJson.start(healthPort);
+        HttpJson.get(health, "/health", (body, ex) ->
+                java.util.Map.of("status", "ok", "shardId", shardId, "activeRooms", activeRooms.get()));
+        HttpJson.get(health, "/metrics", (body, ex) -> java.util.Map.of(
+                "kfc_shard_active_rooms", activeRooms.get(),
+                "kfc_shard_open_connections", sessions.size(),
+                "kfc_shard_id", shardId));
+        health.start();
+        System.out.println("[GameShard] health/metrics on http://0.0.0.0:" + healthPort);
     }
 
     @Override
@@ -189,6 +210,7 @@ public class GameShardMain extends WebSocketServer {
             }
             if (room.getWhite() != null && room.getBlack() != null && !room.isStarted()) {
                 room.setStarted(true);
+                roomStartedAtMs.put(room.getRoomId(), System.currentTimeMillis());
                 activeRooms.incrementAndGet();
                 room.getEngine().getEventBus().subscribe(EventBus.GAME_ENDED,
                         payload -> handleGameEnded(room, payload));
@@ -382,9 +404,19 @@ public class GameShardMain extends WebSocketServer {
         } catch (Exception e) {
             System.err.println("[GameShard] failed to update ELO: " + e.getMessage());
         }
+        try {
+            Long startedAt = roomStartedAtMs.getOrDefault(room.getRoomId(), System.currentTimeMillis());
+            history.recordGame(room.getRoomId(), room.getWhite().getUsername(), room.getBlack().getUsername(),
+                    winner.getUsername(), users.getElo(room.getWhite().getUsername()),
+                    users.getElo(room.getBlack().getUsername()), startedAt,
+                    room.getEngine().snapshot().moveLog());
+        } catch (Exception e) {
+            System.err.println("[GameShard] failed to record game history: " + e.getMessage());
+        }
         broadcastRoomBoardState(room);
         disconnectCountdowns.remove(room.getRoomId());
         waitingRooms.remove(room.getRoomId());
+        roomStartedAtMs.remove(room.getRoomId());
         redis.deleteRoom(room.getRoomId());
         activeRooms.decrementAndGet();
     }

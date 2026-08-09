@@ -2,7 +2,10 @@ package com.kungfuchess.cloud.infra;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.resps.Tuple;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -133,6 +136,49 @@ public class RedisRegistry implements AutoCloseable {
                 }
             }
             return best;
+        }
+    }
+
+    /** @return how many Game Server Shards currently have a live heartbeat. */
+    public int countLiveShards() {
+        try (Jedis j = pool.getResource()) {
+            return j.keys("shard:worker:*").size();
+        }
+    }
+
+    // ── matchmaking queue: sorted set, score = ELO ──────────────────────────────
+
+    public record QueuedPlayer(String username, int elo) {
+    }
+
+    public void enqueueForMatch(String username, int elo) {
+        try (Jedis j = pool.getResource()) {
+            j.zadd("matchmaking:queue", elo, username);
+        }
+    }
+
+    public void dequeueFromMatch(String username) {
+        try (Jedis j = pool.getResource()) {
+            j.zrem("matchmaking:queue", username);
+        }
+    }
+
+    /** @return true if this username was actually removed (i.e. it was still queued). */
+    public boolean removeFromQueueIfPresent(String username) {
+        try (Jedis j = pool.getResource()) {
+            return j.zrem("matchmaking:queue", username) > 0;
+        }
+    }
+
+    /** Current queue, ordered by ELO ascending — for the Matchmaker's pairing scan. */
+    public List<QueuedPlayer> matchQueueSnapshot() {
+        try (Jedis j = pool.getResource()) {
+            List<Tuple> tuples = j.zrangeWithScores("matchmaking:queue", 0, -1);
+            List<QueuedPlayer> result = new ArrayList<>();
+            for (Tuple t : tuples) {
+                result.add(new QueuedPlayer(t.getElement(), (int) t.getScore()));
+            }
+            return result;
         }
     }
 

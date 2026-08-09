@@ -1,11 +1,13 @@
 package com.kungfuchess.cloud.services;
 
+import com.kungfuchess.cloud.infra.GameHistoryRepository;
 import com.kungfuchess.cloud.infra.HttpJson;
 import com.kungfuchess.cloud.infra.RedisRegistry;
 import com.kungfuchess.util.ActivityLogger;
 import com.sun.net.httpserver.HttpServer;
 
 import java.net.http.HttpResponse;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -27,12 +29,27 @@ public class ApiGatewayMain {
                 + ":" + System.getenv().getOrDefault("AUTH_PORT", "8000");
         String redisHost = System.getenv().getOrDefault("REDIS_HOST", "localhost");
         int redisPort = Integer.parseInt(System.getenv().getOrDefault("REDIS_PORT", "6379"));
+        String pgHost = System.getenv().getOrDefault("PG_HOST", "localhost");
+        int pgPort = Integer.parseInt(System.getenv().getOrDefault("PG_PORT", "5432"));
 
         RedisRegistry redis = new RedisRegistry(redisHost, redisPort);
+        GameHistoryRepository history = new GameHistoryRepository(pgHost, pgPort, "kfc", "kfc", "kfc");
         HttpServer server = HttpJson.start(PORT);
+
+        HttpJson.get(server, "/health", (body, ex) -> Map.of("status", "ok", "service", "api-gateway"));
 
         HttpJson.post(server, "/login", Creds.class, (body, ex) -> forward(authUrl + "/login", body, redis));
         HttpJson.post(server, "/register", Creds.class, (body, ex) -> forward(authUrl + "/register", body, redis));
+
+        HttpJson.get(server, "/history", (body, ex) -> {
+            String query = ex.getRequestURI().getQuery();
+            String username = queryParam(query, "username");
+            if (username == null || username.isBlank()) {
+                throw new HttpJson.ApiError(400, "username query parameter is required");
+            }
+            List<GameHistoryRepository.GameSummary> games = history.recentGamesForUser(username, 20);
+            return Map.of("username", username, "games", games);
+        });
 
         server.start();
         System.out.println("[ApiGateway] listening on http://0.0.0.0:" + PORT + " (Auth Service at " + authUrl + ")");
@@ -74,5 +91,18 @@ public class ApiGatewayMain {
 
     private static final class ErrorBody {
         String error;
+    }
+
+    private static String queryParam(String query, String key) {
+        if (query == null) return null;
+        for (String pair : query.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq < 0) continue;
+            String k = java.net.URLDecoder.decode(pair.substring(0, eq), java.nio.charset.StandardCharsets.UTF_8);
+            if (k.equals(key)) {
+                return java.net.URLDecoder.decode(pair.substring(eq + 1), java.nio.charset.StandardCharsets.UTF_8);
+            }
+        }
+        return null;
     }
 }

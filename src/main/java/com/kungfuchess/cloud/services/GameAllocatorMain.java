@@ -28,6 +28,10 @@ public class GameAllocatorMain {
 
         HttpServer server = HttpJson.start(PORT);
 
+        HttpJson.get(server, "/health", (body, ex) -> Map.of("status", "ok", "service", "game-allocator"));
+        HttpJson.get(server, "/metrics", (body, ex) -> Map.of(
+                "kfc_allocator_live_shards", redis.countLiveShards()));
+
         HttpJson.post(server, "/allocate", AllocateRequest.class, (body, ex) -> {
             if (body == null || body.roomId == null || body.roomId.isBlank()) {
                 throw new HttpJson.ApiError(400, "roomId is required");

@@ -48,6 +48,7 @@ echo [1/3] Compiling main sources...
   src\main\java\com\kungfuchess\net\ShardJoinMessage.java ^
   src\main\java\com\kungfuchess\net\RoomInfoMessage.java ^
   src\main\java\com\kungfuchess\net\RoomErrorMessage.java ^
+  src\main\java\com\kungfuchess\net\DodgeMessage.java ^
   src\main\java\com\kungfuchess\server\ServerSession.java ^
   src\main\java\com\kungfuchess\server\Room.java ^
   src\main\java\com\kungfuchess\server\RoomManager.java ^
@@ -58,11 +59,14 @@ echo [1/3] Compiling main sources...
   src\main\java\com\kungfuchess\cloud\infra\RedisRegistry.java ^
   src\main\java\com\kungfuchess\cloud\infra\HttpJson.java ^
   src\main\java\com\kungfuchess\cloud\infra\PostgresUserRepository.java ^
+  src\main\java\com\kungfuchess\cloud\infra\GameHistoryRepository.java ^
   src\main\java\com\kungfuchess\cloud\services\AuthServiceMain.java ^
   src\main\java\com\kungfuchess\cloud\services\ApiGatewayMain.java ^
   src\main\java\com\kungfuchess\cloud\services\GameAllocatorMain.java ^
   src\main\java\com\kungfuchess\cloud\services\GameShardMain.java ^
   src\main\java\com\kungfuchess\cloud\services\WsGatewayMain.java ^
+  src\main\java\com\kungfuchess\cloud\services\MatchmakerMain.java ^
+  src\main\java\com\kungfuchess\cloud\tools\LoadTest.java ^
   src\main\java\com\kungfuchess\client\ChessWebSocketClient.java ^
   src\main\java\com\kungfuchess\client\ClientMain.java ^
   src\main\java\com\kungfuchess\client\LoginWindow.java ^

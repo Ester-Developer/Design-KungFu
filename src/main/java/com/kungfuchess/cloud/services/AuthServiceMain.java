@@ -28,6 +28,8 @@ public class AuthServiceMain {
 
         HttpServer server = HttpJson.start(PORT);
 
+        HttpJson.get(server, "/health", (body, ex) -> Map.of("status", "ok", "service", "auth-service"));
+
         HttpJson.post(server, "/register", Creds.class, (body, ex) -> {
             requireCreds(body);
             if (!users.registerUser(body.username, body.password)) {

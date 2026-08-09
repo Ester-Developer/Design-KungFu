@@ -41,12 +41,12 @@ Auth Service ── PostgreSQL           │  on every join/reconnect
 **Role split** (who does what):
 | Component | Responsibility | Holds state? |
 |---|---|---|
-| API Gateway | Login, room CRUD, history — REST only | No |
-| WS Gateway | Terminates the live socket, relays moves/state, resolves `room_id → shard` in Redis | No |
-| Matchmaker | ELO queue, pairs players | Only the queue (in Redis) |
+| API Gateway | Login, register, `GET /history` — REST only | No |
+| WS Gateway | Terminates the live socket, relays room create/join and Quick Match requests, resolves `room_id → shard` in Redis | No |
+| Matchmaker | ELO-sorted queue in Redis, pairs players within ±100, allocates a shard, publishes the result over NATS | Only the queue (in Redis) |
 | Game Allocator | Picks a shard for a new room, writes the registry entry | No |
-| Game Server Shard | Runs the authoritative `GameEngine` for its assigned rooms — the **only** place game rules are ever decided | Yes — the live game |
-| PostgreSQL | Users, ELO, match history | Yes — durable |
+| Game Server Shard | Runs the authoritative `GameEngine` for its assigned rooms — the **only** place game rules are ever decided — and writes ELO + match history to PostgreSQL at game end | Yes — the live game |
+| PostgreSQL | Users, ELO, match history (`games`, `moves`) | Yes — durable |
 | Redis | Sessions, room→shard registry, matchmaking queue, shard heartbeats | Yes — ephemeral/hot |
 
 The client never decides game rules, and neither does either Gateway — the `GameEngine` inside the owning shard is the single source of truth, exactly as it is today in the single-process version.
@@ -73,24 +73,25 @@ Short, bursty room lifetimes shape several design choices:
 - **Stateless gateways can restart/redeploy freely, mid-game state can't.** Because API/WS Gateways hold no game state, they can be scaled up/down or rolled without any coordination. Game Server Shards *do* hold live state, so their rollout/shutdown must be graceful (finish in-flight rooms — at most ~90s to drain — before terminating), unlike the gateways which can be killed instantly.
 - **One process, many worker rooms per shard.** Since a single game is cheap (short-lived, small board state), a shard container should run many rooms concurrently — Java's real threads (unlike Python's GIL-bound processes) let one JVM shard use every core directly, so unlike a Python implementation there's no need for one-OS-process-per-core; a shard can be a single JVM with an internal thread pool, one room per thread (or an async loop), simplifying deployment.
 
-## 3. Target architecture (Java, matching the diagram reviewed with the course)
+## 3. Target architecture (Java, matching the diagram reviewed with the course) — implemented
 
-| Service | Responsibility | Tech |
-|---|---|---|
-| **API Gateway** | Login, register, room CRUD/history — REST only | Java, `com.sun.net.httpserver` (no new framework dependency) |
-| **WS Gateway** | Terminates client WebSocket, validates session, relays to the resolved shard | Java, `Java-WebSocket` (already a dependency) |
-| **Matchmaker** | ELO-bucketed queue, pairs players, publishes match events | Java |
-| **Game Allocator** | Picks least-loaded shard, writes the Redis registry entry | Java |
-| **Game Server Shard** | Runs authoritative `GameEngine`/`Room` per assigned game (reuses today's engine/rules code unchanged) | Java |
-| **Observability** | Health checks, structured logs (already have `ActivityLogger`), basic metrics | Java + existing logging |
+| Service | Responsibility | Tech | Status |
+|---|---|---|---|
+| **API Gateway** (`8080`) | Login, register, `GET /history` — REST only | Java, `com.sun.net.httpserver` (no new framework dependency) | ✅ implemented |
+| **Auth Service** (`8000`) | Credential validation + ELO storage against PostgreSQL | Java, JDBC | ✅ implemented |
+| **WS Gateway** (`5555`) | Terminates client WebSocket, validates session, relays room create/join and Quick Match, relays to the resolved shard | Java, `Java-WebSocket` | ✅ implemented |
+| **Matchmaker** (`8003`) | ELO±100 queue in Redis, pairs players, allocates a shard, publishes the result over NATS | Java, Jedis + jnats | ✅ implemented |
+| **Game Allocator** (`8004`) | Picks least-loaded shard, writes the Redis registry entry | Java | ✅ implemented |
+| **Game Server Shard** (`5556+`) | Runs authoritative `GameEngine`/`Room` per assigned game (reuses the Phase 1 engine/rules code unchanged), writes ELO + match history to PostgreSQL at game end | Java | ✅ implemented |
+| **Observability** | `GET /health` + `GET /metrics` on every service (companion HTTP server for the two `WebSocketServer`-based services), structured logs (`ActivityLogger`), a concurrent load-test tool (`LoadTest.java`) | Java + existing logging | ✅ implemented |
 
-**Internal event bus**: NATS carries only low-volume control-plane events ("matched", "allocated") between Matchmaker/Allocator/Gateways — not live gameplay traffic, which flows directly WS Gateway → Shard once Redis resolves the address (matches Section 2.3's traffic analysis: that path must stay as short as possible).
+**Internal event bus**: NATS carries the one genuinely asynchronous, cross-instance control-plane event in the system — the Matchmaker publishing a pairing result to whichever WS Gateway instance holds each player's socket, on a per-user subject (`kfc.matched.<username>`). The WS Gateway subscribes *before* asking the Matchmaker to queue the player, so there's no race with NATS core's "no replay for late subscribers" behavior. Room-code create/join deliberately keeps its simpler Redis-polling implementation from the first working slice — both are valid, and rewriting a proven path to use NATS too would be complexity without benefit at this scale.
 
-**No separate Rating service** — unlike some other implementations of this assignment, ELO updates are written directly by the Game Server Shard to PostgreSQL at game end, alongside the match result. This matches the reference diagram reviewed with the course and avoids an extra network hop for a value only written once per game.
+**No separate Rating service** — ELO updates and match history (`games`/`moves` tables) are written directly by the Game Server Shard to PostgreSQL at game end. This matches the reference diagram reviewed with the course and avoids an extra network hop for a value only written once per game.
 
 **Rollout plan** (small-working-thing-first, per the course's own guidance):
-1. `docker-compose.yml` bringing up Redis, PostgreSQL, NATS, and one instance each of the six services above — enough to prove a client can log in, create/join a room by code, play a full game, and see ELO persisted, end-to-end, on one machine.
-2. Multiple Game Server Shard instances + the Game Allocator's least-loaded selection, to prove horizontal sharding actually routes correctly.
-3. Kubernetes/K3s manifests mirroring the same service list, adding HPA (scaling on active-room-count per Section 2.4) and multi-replica gateways.
+1. ✅ **Done.** `docker-compose.yml` brings up Redis, PostgreSQL, NATS, and all six services above (one shared `Dockerfile`, `MAIN_CLASS` env var selects which service a container runs) — `docker compose up --build` is enough for a client to log in, create/join a room by code *or* use Quick Match, play, and see ELO/history persisted, end-to-end, on one machine. Verified via a concurrent load test (`run_load_test.bat`) exercising both flows against the containers.
+2. **Next.** Multiple Game Server Shard instances + the Game Allocator's least-loaded selection, to prove horizontal sharding actually routes correctly (today there is one `game-shard` container — adding a second is mostly copy/paste in `docker-compose.yml`, see the comment there).
+3. **Later.** Kubernetes/K3s manifests mirroring the same service list, adding HPA (scaling on active-room-count per Section 2.4) and multi-replica gateways.
 
-Phase 1 (this repo's current single-process server) stays available as the offline/local-practice path — nothing about it changes; the scaled architecture is an alternative deployment of the *same* game rules code (`GameEngine`, `RuleEngine`, `RealTimeArbiter`), not a rewrite of them.
+Phase 1 (this repo's single-process server, `run_server.bat`/`run_client.bat`) stays available as the offline/local-practice path — nothing about it changes; the scaled architecture is an alternative deployment of the *same* game rules code (`GameEngine`, `RuleEngine`, `RealTimeArbiter`), not a rewrite of them.

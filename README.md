@@ -96,6 +96,7 @@ Log in (an account is created automatically on first login), then either hit **P
 * **Rooms** — create a room and share its 4-character code, or join one with a code; a third player who joins becomes a spectator.
 * **Quick Match** — ELO±100 matchmaking queue that pairs opponents automatically.
 * **Disconnect grace** — a disconnected player has 20 seconds to reconnect before the match is forfeited.
+* **Match history** — every finished game and its full move log is persisted (scaled architecture only) and queryable via the API Gateway's `/history` endpoint.
 * **Live activity log** — client and server both log session/game activity to file for debugging and review.
 
 ---
@@ -110,19 +111,22 @@ One JVM (`ServerMain`) hosts the WebSocket endpoint, an in-memory `RoomManager` 
 
 ### Phase 2 — Scaled cloud architecture
 
-The single process is split into five independent Java services, so gateways, matchmaking/allocation, and game execution can each scale on their own:
+The single process is split into six independent Java services, so gateways, matchmaking/allocation, and game execution can each scale on their own:
 
 | Service | Port | Responsibility |
 | :--- | :--- | :--- |
-| **API Gateway** | `8080` | REST entry point — `/login`, `/register`; forwards to Auth Service and issues a short-lived Redis session token. |
+| **API Gateway** | `8080` | REST entry point — `/login`, `/register`, `/history`; forwards auth to the Auth Service and issues a short-lived Redis session token. |
 | **Auth Service** | `8000` | Credential validation and ELO storage against PostgreSQL. |
-| **WS Gateway** | `5555` | Validates session tokens, handles room create/join against the Redis registry, and redirects both players to an allocated game shard. |
+| **WS Gateway** | `5555` | Validates session tokens, handles room create/join and Quick Match requests, and redirects players to an allocated game shard. |
+| **Matchmaker** | `8003` | ELO±100 queue (Redis sorted set); pairs players, allocates a shard, and publishes the result over NATS to whichever gateway holds each player's socket. |
 | **Game Allocator** | `8004` | Picks the least-loaded game shard (via shard heartbeats in Redis) for a new room. |
-| **Game Server Shard** | `5556+` | Hosts the authoritative `GameEngine` for each room it's assigned — the single source of truth for game state — and writes final ELO to PostgreSQL. |
+| **Game Server Shard** | `5556+` | Hosts the authoritative `GameEngine` for each room it's assigned — the single source of truth for game state — and writes final ELO + match history to PostgreSQL. |
 
-**Shared infrastructure** (via Docker Compose): **Redis** for ephemeral state (session tokens, room→shard routing, shard heartbeats), **PostgreSQL** for durable state (users, ELO), **NATS** for the internal service event bus.
+**Shared infrastructure** (via Docker Compose): **Redis** for ephemeral state (session tokens, room→shard routing, matchmaking queue, shard heartbeats), **PostgreSQL** for durable state (users, ELO, `games`/`moves` history), **NATS** for delivering a Quick Match result to the right gateway instance.
 
-The handshake is a two-hop redirect: client → WS Gateway (auth + room routing) → once both players are seated, the WS Gateway calls the Game Allocator, then tells both clients where to reconnect → client → Game Server Shard (authoritative gameplay).
+The handshake is a two-hop redirect: client → WS Gateway (auth + room/queue routing) → once two players are paired (by room code or Quick Match), the responsible service calls the Game Allocator, then tells both clients where to reconnect → client → Game Server Shard (authoritative gameplay).
+
+Every service exposes `GET /health` and `GET /metrics`; a concurrent load-test tool (`run_load_test.bat`) drives both the room and Quick Match flows in parallel and reports success rate and pairing latency.
 
 See [`Server_Design.md`](Server_Design.md) for the full design rationale (database choice, the Redis registry, traffic estimates, and how short match lifetimes shape the autoscaling/no-migration approach) and rollout plan.
 
@@ -133,21 +137,39 @@ See [`Server_Design.md`](Server_Design.md) for the full design rationale (databa
 **Requirements:** everything above, plus [Docker Desktop](https://www.docker.com/products/docker-desktop/).
 
 ```bat
-:: 1. Start shared infrastructure (Redis, PostgreSQL, NATS)
-docker compose up -d
+:: Builds and starts Redis, PostgreSQL, NATS, and all six Java services
+docker compose up --build -d
 
-:: 2. Start each service in its own window
-run_auth_service.bat
-run_api_gateway.bat
-run_game_allocator.bat
-run_game_shard.bat
-run_ws_gateway.bat
-
-:: 3. Connect with the cloud client
+:: Connect with the cloud client
 run_cloud_client.bat
 ```
 
-> Redis defaults to port `6380` rather than the standard `6379` — see the comments in `docker-compose.yml` / `run_cloud_service.bat` if you need to change it.
+Run `run_cloud_client.bat` again for a second player. Both **Room** (create/share a code) and **Play (Quick Match)** work against this stack.
+
+> Redis's host-side port defaults to `6380` rather than the standard `6379` — see the comment in `docker-compose.yml` if you need to change it. Services talking to each other *inside* the Docker network still use the standard `6379`.
+
+<details>
+<summary>Running the services without Docker (each in its own window)</summary>
+
+```bat
+docker compose up -d redis postgres nats
+run_auth_service.bat
+run_api_gateway.bat
+run_game_allocator.bat
+run_matchmaker.bat
+run_game_shard.bat
+run_ws_gateway.bat
+run_cloud_client.bat
+```
+</details>
+
+### Load testing
+
+```bat
+run_load_test.bat --room-pairs 5 --quick-pairs 5 --api http://localhost:8080 --ws ws://localhost:5555
+```
+
+Spins up N room-code pairs and M Quick Match pairs concurrently and reports success rate plus pairing→shard-redirect latency (min/p50/p95/max).
 
 ---
 
@@ -162,7 +184,7 @@ run_cloud_client.bat
 | **Serialization** | Gson |
 | **Ephemeral State** | Redis ([Jedis](https://github.com/redis/jedis)) |
 | **Durable Storage** | SQLite (Phase 1) / PostgreSQL (Phase 2, JDBC) |
-| **Event Bus** | NATS ([jnats](https://github.com/nats-io/nats.java)) |
+| **Event Bus** | NATS ([jnats](https://github.com/nats-io/nats.java)) — delivers Quick Match pairing results |
 | **Containerization** | Docker & Docker Compose |
 | **Testing** | JUnit 5 |
 
@@ -189,8 +211,9 @@ src/main/java/com/kungfuchess/
 ├── net/        # Wire-protocol message types shared by client and server
 ├── auth/       # Phase 1 SQLite-backed user/ELO store
 ├── cloud/
-│   ├── infra/     # Redis registry, Postgres user store, JSON/HTTP helpers
-│   └── services/  # Phase 2 microservices (API Gateway, Auth, Allocator, Shard, WS Gateway)
+│   ├── infra/     # Redis registry, Postgres user/history repositories, JSON/HTTP helpers
+│   ├── services/  # Phase 2 microservices (API Gateway, Auth, Matchmaker, Allocator, Shard, WS Gateway)
+│   └── tools/     # LoadTest — concurrent room + Quick Match load generator
 └── bus/        # Internal event bus
 ```
 

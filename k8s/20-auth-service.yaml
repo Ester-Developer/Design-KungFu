@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: kfchess
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: auth-service }
+  template:
+    metadata:
+      labels: { app: auth-service }
+    spec:
+      containers:
+        - name: auth-service
+          image: kfchess:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: kfchess-config }
+          env:
+            - { name: MAIN_CLASS, value: com.kungfuchess.cloud.services.AuthServiceMain }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: kfchess
+spec:
+  # Internal only — the API Gateway is the sole caller (Server_Design.md §3).
+  type: ClusterIP
+  selector: { app: auth-service }
+  ports:
+    - port: 8000
+      targetPort: 8000

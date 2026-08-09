@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ws-gateway
+  namespace: kfchess
+spec:
+  # Stateless (Server_Design.md §2.2) — safe to run multiple replicas; a client's
+  # room/queue request is resolved through Redis, not in-memory gateway state, so
+  # it doesn't matter which replica a given client lands on.
+  replicas: 1
+  selector:
+    matchLabels: { app: ws-gateway }
+  template:
+    metadata:
+      labels: { app: ws-gateway }
+    spec:
+      containers:
+        - name: ws-gateway
+          image: kfchess:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: kfchess-config }
+          env:
+            - { name: MAIN_CLASS, value: com.kungfuchess.cloud.services.WsGatewayMain }
+            - { name: WS_PORT, value: "5555" }
+            - { name: WS_HEALTH_PORT, value: "6555" }
+          ports:
+            - containerPort: 5555
+            - containerPort: 6555
+          readinessProbe:
+            httpGet: { path: /health, port: 6555 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 6555 }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ws-gateway
+  namespace: kfchess
+spec:
+  # Client-facing WebSocket entry point — LoadBalancer publishes to localhost:5555
+  # on Docker Desktop's local K8s, matching docker-compose/run_cloud_client.bat.
+  type: LoadBalancer
+  selector: { app: ws-gateway }
+  ports:
+    - { name: ws, port: 5555, targetPort: 5555 }
+    - { name: health, port: 6555, targetPort: 6555 }

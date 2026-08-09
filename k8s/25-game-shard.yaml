@@ -1,0 +1,61 @@
+# Single shard (Server_Design.md rollout step 1→2 boundary): the GUI client
+# connects to a shard *directly*, outside the cluster, once the WS Gateway /
+# Matchmaker redirects it — so the address a shard advertises via its Redis
+# heartbeat (SHARD_PUBLIC_HOST/SHARD_PORT) must be reachable from outside, not
+# just the in-cluster Service DNS name. On Docker Desktop's local K8s a
+# LoadBalancer Service publishes to localhost on the port below, so
+# SHARD_PUBLIC_HOST=localhost mirrors exactly what docker-compose.yml already
+# does for the same reason.
+#
+# Scaling to multiple shards means: duplicate this file (game-shard-2.yaml, ...)
+# with its own Deployment/Service pair on a different SHARD_PORT and a matching
+# externally-reachable port — replicas: N on a single Deployment does NOT work
+# here, because each shard needs its own distinct externally-routable address
+# for the Game Allocator to hand out.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-shard
+  namespace: kfchess
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: game-shard }
+  template:
+    metadata:
+      labels: { app: game-shard }
+    spec:
+      containers:
+        - name: game-shard
+          image: kfchess:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: kfchess-config }
+          env:
+            - { name: MAIN_CLASS, value: com.kungfuchess.cloud.services.GameShardMain }
+            - { name: SHARD_PORT, value: "5556" }
+            - { name: SHARD_HEALTH_PORT, value: "6556" }
+            - { name: SHARD_PUBLIC_HOST, value: "localhost" }
+          ports:
+            - containerPort: 5556
+            - containerPort: 6556
+          readinessProbe:
+            httpGet: { path: /health, port: 6556 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 6556 }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-shard
+  namespace: kfchess
+spec:
+  type: LoadBalancer
+  selector: { app: game-shard }
+  ports:
+    - { name: ws, port: 5556, targetPort: 5556 }
+    - { name: health, port: 6556, targetPort: 6556 }

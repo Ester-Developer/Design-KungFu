@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matchmaker
+  namespace: kfchess
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: matchmaker }
+  template:
+    metadata:
+      labels: { app: matchmaker }
+    spec:
+      containers:
+        - name: matchmaker
+          image: kfchess:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: kfchess-config }
+          env:
+            - { name: MAIN_CLASS, value: com.kungfuchess.cloud.services.MatchmakerMain }
+          ports:
+            - containerPort: 8003
+          readinessProbe:
+            httpGet: { path: /health, port: 8003 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8003 }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: matchmaker
+  namespace: kfchess
+spec:
+  # Internal only — called by the WS Gateway.
+  type: ClusterIP
+  selector: { app: matchmaker }
+  ports:
+    - port: 8003
+      targetPort: 8003

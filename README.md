@@ -9,6 +9,7 @@ Both players move *simultaneously* — there's no waiting for your opponent. Eve
 ![Java](https://img.shields.io/badge/Java-17-orange?logo=openjdk&logoColor=white)
 ![WebSocket](https://img.shields.io/badge/Networking-WebSocket-blue)
 ![Docker](https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/Deploy-Kubernetes-326CE5?logo=kubernetes&logoColor=white)
 ![ELO](https://img.shields.io/badge/Matchmaking-ELO-brightgreen)
 
 </div>
@@ -36,7 +37,7 @@ run_client.bat
 
 Log in (an account is created automatically on first login), then either hit **Play** for an ELO-matched quick game, or open **Room** to create/share a 4-character code with a friend.
 
-> Want the full scaled cloud version (API Gateway, WS Gateway, sharded game servers, Redis/PostgreSQL/NATS via Docker)? See [Running the Scaled Architecture](#-running-the-scaled-architecture) below.
+> Want the full scaled cloud version (API Gateway, WS Gateway, Matchmaker, sharded game servers, Redis/PostgreSQL/NATS)? See [Running the Scaled Architecture](#-running-the-scaled-architecture) below.
 
 ---
 
@@ -111,7 +112,48 @@ One JVM (`ServerMain`) hosts the WebSocket endpoint, an in-memory `RoomManager` 
 
 ### Phase 2 — Scaled cloud architecture
 
-The single process is split into six independent Java services, so gateways, matchmaking/allocation, and game execution can each scale on their own:
+The single process is split into six independent Java services, so gateways, matchmaking/allocation, and game execution can each scale on their own. The **client never decides game rules, and neither does either gateway** — the `GameEngine` inside the Game Server Shard that owns a room is the single source of truth, exactly as in Phase 1.
+
+```mermaid
+flowchart TB
+    C(["🖥️ Client<br/>Swing GUI"])
+
+    subgraph GW["Stateless Gateways"]
+        AG["API Gateway  :8080<br/>REST — login / register / history"]
+        WSG["WS Gateway  :5555<br/>live connections, room + queue routing"]
+    end
+
+    subgraph SVC["Matching &amp; Allocation"]
+        AUTH["Auth Service  :8000"]
+        MM["Matchmaker  :8003<br/>ELO±100 queue"]
+        GA["Game Allocator  :8004<br/>picks least-loaded shard"]
+    end
+
+    GS["Game Server Shard  :5556+<br/>authoritative GameEngine<br/>(single source of truth)"]
+
+    R[("Redis<br/>sessions · room→shard<br/>queue · heartbeats")]
+    PG[("PostgreSQL<br/>users · ELO<br/>games · moves")]
+    N{{"NATS<br/>kfc.matched.&lt;user&gt;"}}
+
+    C -- "① REST login / register" --> AG
+    AG --> AUTH --> PG
+    AG -. issues token .-> R
+
+    C -- "② WS: TOKEN, then ROOM_CREATE/JOIN or PLAY" --> WSG
+    WSG -. validate + room registry .-> R
+    WSG -- Quick Match --> MM
+    MM -. ELO queue .-> R
+    MM --> GA
+    WSG -- room ready --> GA
+    GA -. reads shard heartbeats .-> R
+    MM -- "③ publish match result" --> N
+    N -- "④ notify" --> WSG
+    WSG -- "⑤ SHARD_CONNECT redirect" --> C
+
+    C -- "⑥ WS: SHARD_JOIN, moves" --> GS
+    GS -- ELO + match history --> PG
+    GS -. heartbeat .-> R
+```
 
 | Service | Port | Responsibility |
 | :--- | :--- | :--- |
@@ -120,9 +162,12 @@ The single process is split into six independent Java services, so gateways, mat
 | **WS Gateway** | `5555` | Validates session tokens, handles room create/join and Quick Match requests, and redirects players to an allocated game shard. |
 | **Matchmaker** | `8003` | ELO±100 queue (Redis sorted set); pairs players, allocates a shard, and publishes the result over NATS to whichever gateway holds each player's socket. |
 | **Game Allocator** | `8004` | Picks the least-loaded game shard (via shard heartbeats in Redis) for a new room. |
-| **Game Server Shard** | `5556+` | Hosts the authoritative `GameEngine` for each room it's assigned — the single source of truth for game state — and writes final ELO + match history to PostgreSQL. |
+| **Game Server Shard** | `5556+` | Hosts the authoritative `GameEngine` for each room it's assigned and writes final ELO + match history to PostgreSQL. |
 
-**Shared infrastructure** (via Docker Compose): **Redis** for ephemeral state (session tokens, room→shard routing, matchmaking queue, shard heartbeats), **PostgreSQL** for durable state (users, ELO, `games`/`moves` history), **NATS** for delivering a Quick Match result to the right gateway instance.
+**Why each store is what it is:**
+- **Redis** holds only *ephemeral, hot* state — session tokens, the room→shard registry, the matchmaking queue, shard heartbeats — never anything that needs to survive a restart.
+- **PostgreSQL** holds *durable* state — users, ELO, match/move history — and replaces Phase 1's SQLite specifically because SQLite is single-writer and can't be shared across multiple service instances (see `Server_Design.md` §2.1).
+- **NATS** carries exactly one thing: the Matchmaker notifying whichever WS Gateway instance holds a given player's socket that they've been paired — the one place in the system where a result has to reach a *specific other instance* asynchronously, rather than a synchronous REST call or a shared Redis key both sides already know to look at.
 
 The handshake is a two-hop redirect: client → WS Gateway (auth + room/queue routing) → once two players are paired (by room code or Quick Match), the responsible service calls the Game Allocator, then tells both clients where to reconnect → client → Game Server Shard (authoritative gameplay).
 
@@ -173,6 +218,27 @@ Spins up N room-code pairs and M Quick Match pairs concurrently and reports succ
 
 ---
 
+## ☸️ Running on Kubernetes
+
+Manifests for the same nine components live in [`k8s/`](k8s/) — a `Namespace`, a shared `ConfigMap` for service-discovery env vars, `Deployment`+`Service` pairs for Redis/NATS/the six Java services, and a `StatefulSet`+`PersistentVolumeClaim` for PostgreSQL (the one durable component). Every service's `readinessProbe`/`livenessProbe` hits its `/health` endpoint.
+
+```bat
+:: Build the one shared image all six Java services run from
+docker build -t kfchess:latest .
+
+:: Apply everything (numbered filenames control apply order)
+kubectl apply -f k8s/
+
+:: Watch it come up
+kubectl get pods -n kfchess -w
+```
+
+`api-gateway`, `ws-gateway`, and `game-shard` are `LoadBalancer` Services (client-facing — on Docker Desktop's local Kubernetes these publish to `localhost` on their usual ports, same as Docker Compose); the rest are `ClusterIP` (internal-only), mirroring the reachability split already made in `docker-compose.yml`.
+
+> **Status:** these manifests are structurally validated (every `Service` selector matches its `Deployment`'s pod labels, YAML parses cleanly) but have not yet been exercised against a live cluster in this environment — see `Server_Design.md`'s rollout plan for what's next. Only `game-shard` needs special care when scaling past one replica: each shard needs its own externally-reachable address (the comment at the top of `k8s/25-game-shard.yaml` explains why that's a second Deployment+Service, not `replicas: N`).
+
+---
+
 ## 🛠️ Technology Stack
 
 | Layer | Technology |
@@ -186,6 +252,7 @@ Spins up N room-code pairs and M Quick Match pairs concurrently and reports succ
 | **Durable Storage** | SQLite (Phase 1) / PostgreSQL (Phase 2, JDBC) |
 | **Event Bus** | NATS ([jnats](https://github.com/nats-io/nats.java)) — delivers Quick Match pairing results |
 | **Containerization** | Docker & Docker Compose |
+| **Orchestration** | Kubernetes (`k8s/`) |
 | **Testing** | JUnit 5 |
 
 ---
@@ -215,10 +282,13 @@ src/main/java/com/kungfuchess/
 │   ├── services/  # Phase 2 microservices (API Gateway, Auth, Matchmaker, Allocator, Shard, WS Gateway)
 │   └── tools/     # LoadTest — concurrent room + Quick Match load generator
 └── bus/        # Internal event bus
+
+k8s/            # Kubernetes manifests mirroring docker-compose.yml
+libs/           # Vendored runtime jars for the Docker image (no Maven resolver in this environment)
 ```
 
 ---
 
 ## 👥 Credits
 
-Developed as a course project (CTD 26) demonstrating real-time networked game state synchronization, from a single-process server through a scaled, sharded cloud architecture.
+Developed as a course project (CTD 26) demonstrating real-time networked game state synchronization, from a single-process server through a scaled, sharded cloud architecture deployable via Docker Compose or Kubernetes.

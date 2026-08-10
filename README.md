@@ -96,7 +96,7 @@ Log in (an account is created automatically on first login), then either hit **P
 * **ELO rating** — every account has a rating that updates after each game (K-factor 32).
 * **Rooms** — create a room and share its 4-character code, or join one with a code; a third player who joins becomes a spectator.
 * **Quick Match** — ELO±100 matchmaking queue that pairs opponents automatically.
-* **Disconnect grace** — a disconnected player has 20 seconds to reconnect before the match is forfeited.
+* **Disconnect grace with auto-reconnect** — a disconnected player has 20 seconds to reconnect before the match is forfeited; the client retries automatically in the background, and if it succeeds the opponent's countdown cancels and play resumes with no state lost.
 * **Match history** — every finished game and its full move log is persisted (scaled architecture only) and queryable via the API Gateway's `/history` endpoint.
 * **Live activity log** — client and server both log session/game activity to file for debugging and review.
 
@@ -236,6 +236,8 @@ kubectl get pods -n kfchess -w
 `api-gateway`, `ws-gateway`, and `game-shard` are `LoadBalancer` Services (client-facing — on Docker Desktop's local Kubernetes these publish to `localhost` on their usual ports, same as Docker Compose); the rest are `ClusterIP` (internal-only), mirroring the reachability split already made in `docker-compose.yml`.
 
 > **Status:** deployed and verified against a live local cluster (`kind`, via Docker Desktop) — all 9 pods reach `Running`/`Ready`, and a concurrent load test against the cluster's `LoadBalancer` addresses succeeded across both room-code and Quick Match flows. If your cluster has no `LoadBalancer` controller (`kubectl get svc -n kfchess` shows `<pending>` under `EXTERNAL-IP`), use `kubectl port-forward` instead, e.g. `kubectl port-forward -n kfchess svc/api-gateway 8080:8080`. Only `game-shard` needs special care when scaling past one replica: each shard needs its own externally-reachable address (the comment at the top of `k8s/25-game-shard.yaml` explains why that's a second Deployment+Service, not `replicas: N`).
+>
+> **After rebuilding the image:** Docker Desktop's `kind`-provisioned cluster runs its node in an isolated environment that does **not** share the host Docker daemon's image cache — `docker build -t kfchess:latest .` alone won't update already-running pods even with a matching tag. Force a fresh pull with `kubectl rollout restart deployment/<name> -n kfchess`, and if that still doesn't pick up the change, verify with `kubectl get pod -n kfchess -l app=<name> -o jsonpath='{.items[0].status.containerStatuses[0].imageID}'` against `docker images kfchess:latest --format '{{.ID}}'` — a mismatch means the node truly never saw the new image, which usually means the `docker-compose` stack (which doesn't have this issue) is the faster loop for iterating.
 
 ---
 

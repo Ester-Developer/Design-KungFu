@@ -36,7 +36,7 @@ Auth Service ── PostgreSQL           │  on every join/reconnect
 
 - When a room is created (or a match is found), the **Game Allocator** picks the least-loaded shard (via heartbeats each shard writes to Redis: `shard:worker:{id} → {host, port, active_rooms}`) and writes `room:{room_id} → {shard_host, shard_port}` into Redis.
 - **Any** WS Gateway pod, on **any** node, resolves that same Redis key — so "everyone can play with everyone" and "anyone can join any room" fall out for free: the gateway a client happens to connect to doesn't need to already know about the room, it just asks Redis. Redis is the one thing every gateway and every shard shares, which is exactly why it's the registry rather than a bespoke "which-shard" service.
-- Reconnects work the same way: a dropped client reconnects through *any* gateway, which re-resolves the same `room_id` and reattaches to the same shard — no game state is lost, because the gateway never held any state to lose.
+- **Reconnects, as actually implemented**, take a more direct path than originally sketched here: the client already knows which shard it's on (cached from the original redirect), so on an unexpected drop it reconnects *straight back to that shard* — no game state is lost, and no gateway round-trip is needed for the common case (the shard is still up). The tradeoff, acceptable at this scale: it doesn't survive the shard itself dying mid-game — recovering from that would mean re-resolving through Redis/a gateway as first sketched here, which is future work, not something this rollout needed yet.
 
 **Role split** (who does what):
 | Component | Responsibility | Holds state? |

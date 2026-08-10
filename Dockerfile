@@ -9,6 +9,14 @@ FROM eclipse-temurin:17-jre
 WORKDIR /app
 COPY out ./out
 COPY libs ./libs
+# PieceConfig/ImageView read piece state configs (is_loop, next_state_when_finished,
+# speed_m_per_sec) via the relative path "src/main/resources/pieces/..." — resolved
+# against the JVM's working directory, not the classpath. Game Server Shard actually
+# NEEDS these at runtime (RealTimeArbiter uses them to compute the post-landing rest
+# duration), so without this COPY every state lookup silently misses and falls back
+# to defaults (is_loop defaults to true), collapsing every piece's post-landing
+# cooldown to zero — no rest chain, no visible cooldown ring, immediate re-move.
+COPY src/main/resources ./src/main/resources
 
 ENV MAIN_CLASS=com.kungfuchess.cloud.services.AuthServiceMain
 ENTRYPOINT ["sh", "-c", "exec java -cp out:libs/* $MAIN_CLASS"]

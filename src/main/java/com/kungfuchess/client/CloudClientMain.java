@@ -107,6 +107,7 @@ public class CloudClientMain {
         CountDownLatch colorLatch = new CountDownLatch(1);
         CountDownLatch opponentLatch = new CountDownLatch(1);
         String[] assignedColor = new String[1];
+        boolean[] viaQuickMatch = new boolean[1];
 
         // Built early and warmed up on a background thread right away, so piece
         // sprites are already decoded by the time the game actually starts instead
@@ -120,13 +121,16 @@ public class CloudClientMain {
 
         LoginWindow.HomeHandler homeHandler = new LoginWindow.HomeHandler() {
             @Override public void onPlay() {
+                viaQuickMatch[0] = true;
                 gatewayClient.sendPlayRequest();
                 loginWindow.showSearching();
             }
             @Override public void onCreateRoom() {
+                viaQuickMatch[0] = false;
                 gatewayClient.sendRoomCreate();
             }
             @Override public void onJoinRoom(String roomId) {
+                viaQuickMatch[0] = false;
                 gatewayClient.sendRoomJoin(roomId);
             }
         };
@@ -136,6 +140,10 @@ public class CloudClientMain {
             }
         });
         gatewayClient.setOnRoomError(reason -> loginWindow.showHomeScreen(auth.username, homeHandler, reason));
+        // The Matchmaker gives up after 30s in its queue (Server_Design.md) and tells
+        // us over NATS — without this, "Searching for an opponent..." would spin forever.
+        gatewayClient.setOnNoMatch(() -> loginWindow.showHomeScreen(auth.username, homeHandler,
+                "No opponent found within 30 seconds. Try again, or open a Room instead."));
 
         CompletableFuture<ShardConnectMessage> shardConnect = new CompletableFuture<>();
         gatewayClient.setOnShardConnect(shardConnect::complete);
@@ -165,7 +173,10 @@ public class CloudClientMain {
 
         colorLatch.await();
         if (!client.isOpponentPresent()) {
-            loginWindow.showWaitingForOpponent(assignedColor[0], redirect.getRoomId());
+            // A Quick Match room ID is an internal Matchmaker implementation detail
+            // (e.g. "Q-AB12CD") — showing it as a shareable "Room code" would be
+            // misleading, so only the room-code flow gets one here.
+            loginWindow.showWaitingForOpponent(assignedColor[0], viaQuickMatch[0] ? null : redirect.getRoomId());
             opponentLatch.await();
         }
         loginWindow.hideWindow();

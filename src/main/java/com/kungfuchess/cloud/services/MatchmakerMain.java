@@ -14,6 +14,7 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -35,6 +36,10 @@ public class MatchmakerMain {
     private static final int PORT = 8003;
     private static final int ELO_RANGE = 100;
     private static final long SCAN_INTERVAL_MS = 750;
+    private static final long QUEUE_TIMEOUT_MS = 30_000;
+
+    /** When each still-queued username joined — used to evict/notify after QUEUE_TIMEOUT_MS. */
+    private static final ConcurrentHashMap<String, Long> queueJoinedAt = new ConcurrentHashMap<>();
 
     public static void main(String[] args) throws Exception {
         ActivityLogger.install("matchmaker");
@@ -60,6 +65,7 @@ public class MatchmakerMain {
                 throw new HttpJson.ApiError(400, "username is required");
             }
             redis.enqueueForMatch(reqBody.username, reqBody.elo);
+            queueJoinedAt.put(reqBody.username, System.currentTimeMillis());
             System.out.println("[Matchmaker] " + reqBody.username + " (ELO " + reqBody.elo + ") joined the queue");
             return Map.of("status", "queued");
         });
@@ -69,6 +75,7 @@ public class MatchmakerMain {
                 throw new HttpJson.ApiError(400, "username is required");
             }
             redis.removeFromQueueIfPresent(reqBody.username);
+            queueJoinedAt.remove(reqBody.username);
             return Map.of("status", "left");
         });
 
@@ -78,6 +85,9 @@ public class MatchmakerMain {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.scheduleWithFixedDelay(
                 () -> scanAndPair(redis, allocatorUrl, nats, gson, random),
+                SCAN_INTERVAL_MS, SCAN_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        scheduler.scheduleWithFixedDelay(
+                () -> evictTimedOutPlayers(redis, nats),
                 SCAN_INTERVAL_MS, SCAN_INTERVAL_MS, TimeUnit.MILLISECONDS);
 
         Thread.currentThread().join();
@@ -101,12 +111,34 @@ public class MatchmakerMain {
         }
     }
 
+    /**
+     * Players who've been queued longer than QUEUE_TIMEOUT_MS without a match are
+     * removed and told so over NATS (kfc.nomatch.&lt;username&gt;) — without this, a
+     * client's "Searching for an opponent..." screen would just spin forever, since
+     * nothing ever tells the WS Gateway to give up.
+     */
+    private static void evictTimedOutPlayers(RedisRegistry redis, Connection nats) {
+        long now = System.currentTimeMillis();
+        for (RedisRegistry.QueuedPlayer p : redis.matchQueueSnapshot()) {
+            Long joinedAt = queueJoinedAt.get(p.username());
+            if (joinedAt == null || now - joinedAt < QUEUE_TIMEOUT_MS) continue;
+            if (redis.removeFromQueueIfPresent(p.username())) {
+                queueJoinedAt.remove(p.username());
+                nats.publish("kfc.nomatch." + p.username(), new byte[0]);
+                System.out.println("[Matchmaker] " + p.username() + " timed out waiting for a Quick Match ("
+                        + QUEUE_TIMEOUT_MS / 1000 + "s)");
+            }
+        }
+    }
+
     private static void pairUp(RedisRegistry redis, String allocatorUrl, Connection nats, Gson gson,
                                 SecureRandom random, RedisRegistry.QueuedPlayer white, RedisRegistry.QueuedPlayer black) {
         // Re-check + remove atomically-enough for this scale: both must still be queued.
         if (!redis.removeFromQueueIfPresent(white.username()) || !redis.removeFromQueueIfPresent(black.username())) {
             return;
         }
+        queueJoinedAt.remove(white.username());
+        queueJoinedAt.remove(black.username());
         String roomId = "Q-" + randomCode(random, 6);
         try {
             redis.createRoom(roomId, white.username());
@@ -134,8 +166,13 @@ public class MatchmakerMain {
                     + black.username() + ": " + e.getMessage());
             redis.deleteRoom(roomId);
             // Best effort — put both back in the queue so they aren't stranded.
+            // Their timeout clock restarts, which is fine: allocation failures should
+            // be rare, and a fresh QUEUE_TIMEOUT_MS window is simpler than threading
+            // the original join time through the retry.
             redis.enqueueForMatch(white.username(), white.elo());
             redis.enqueueForMatch(black.username(), black.elo());
+            queueJoinedAt.put(white.username(), System.currentTimeMillis());
+            queueJoinedAt.put(black.username(), System.currentTimeMillis());
         }
     }
 

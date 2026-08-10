@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.kungfuchess.cloud.infra.HttpJson;
 import com.kungfuchess.cloud.infra.RedisRegistry;
+import com.kungfuchess.net.NoMatchMessage;
 import com.kungfuchess.net.RoomErrorMessage;
 import com.kungfuchess.net.RoomInfoMessage;
 import com.kungfuchess.net.RoomJoinMessage;
@@ -113,6 +114,7 @@ public class WsGatewayMain extends WebSocketServer {
         if (username != null) {
             pendingByUsername.remove(username, conn);
             natsDispatcher.unsubscribe("kfc.matched." + username);
+            natsDispatcher.unsubscribe("kfc.nomatch." + username);
         }
     }
 
@@ -213,20 +215,30 @@ public class WsGatewayMain extends WebSocketServer {
             conn.send(gson.toJson(new RoomErrorMessage("must send TOKEN first")));
             return;
         }
-        String subject = "kfc.matched." + username;
-        natsDispatcher.subscribe(subject, msg -> {
-            natsDispatcher.unsubscribe(subject);
+        String matchedSubject = "kfc.matched." + username;
+        String noMatchSubject = "kfc.nomatch." + username;
+        natsDispatcher.subscribe(matchedSubject, msg -> {
+            natsDispatcher.unsubscribe(matchedSubject);
+            natsDispatcher.unsubscribe(noMatchSubject);
             if (!conn.isOpen()) return;
             ShardConnectMessage shardConnect = gson.fromJson(
                     new String(msg.getData(), StandardCharsets.UTF_8), ShardConnectMessage.class);
             conn.send(gson.toJson(shardConnect));
             System.out.println("[WsGateway] " + username + " quick-matched -> " + shardConnect.getShardUrl());
         });
+        natsDispatcher.subscribe(noMatchSubject, msg -> {
+            natsDispatcher.unsubscribe(matchedSubject);
+            natsDispatcher.unsubscribe(noMatchSubject);
+            if (!conn.isOpen()) return;
+            conn.send(gson.toJson(new NoMatchMessage()));
+            System.out.println("[WsGateway] " + username + " — no Quick Match found within the queue timeout");
+        });
         try {
             HttpJson.postJson(matchmakerUrl + "/queue/join", Map.of("username", username, "elo", elo), Map.class);
             System.out.println("[WsGateway] " + username + " (ELO " + elo + ") requested Quick Match");
         } catch (Exception e) {
-            natsDispatcher.unsubscribe(subject);
+            natsDispatcher.unsubscribe(matchedSubject);
+            natsDispatcher.unsubscribe(noMatchSubject);
             conn.send(gson.toJson(new RoomErrorMessage("Matchmaker is unavailable. Try again.")));
         }
     }

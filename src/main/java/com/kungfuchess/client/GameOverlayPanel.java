@@ -106,6 +106,14 @@ final class GameOverlayPanel extends JPanel {
         repaint();
     }
 
+    /** Shown on the local player's own window while an unexpected drop is being retried. */
+    void showReconnecting() {
+        disconnectLabel.setText("Connection lost — reconnecting...");
+        disconnectLabel.setVisible(true);
+        revalidate();
+        repaint();
+    }
+
     void showGameOver(String message) {
         gameOverLabel.setText(message);
         gameOverBox.setVisible(true);

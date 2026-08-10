@@ -18,6 +18,7 @@ import com.kungfuchess.net.ErrorMessage;
 import com.kungfuchess.net.LoginMessage;
 import com.kungfuchess.net.MoveMessage;
 import com.kungfuchess.net.MoveNotation;
+import com.kungfuchess.net.ReconnectMessage;
 import com.kungfuchess.net.RoomCreateMessage;
 import com.kungfuchess.net.RoomErrorMessage;
 import com.kungfuchess.net.RoomInfoMessage;
@@ -141,6 +142,7 @@ public class ChessWebSocketServer extends WebSocketServer {
 
             switch (type) {
                 case "LOGIN" -> handleLoginMessage(conn, message);
+                case "RECONNECT" -> handleReconnect(conn, message);
                 case "ROOM_CREATE" -> handleRoomCreate(conn);
                 case "ROOM_JOIN" -> handleRoomJoin(conn, message);
                 case "PLAY" -> handlePlayRequest(conn);
@@ -222,6 +224,44 @@ public class ChessWebSocketServer extends WebSocketServer {
 
     private void sendAuthResult(WebSocket conn, boolean success, String reason, int elo) {
         conn.send(gson.toJson(new AuthResultMessage(success, reason, elo)));
+    }
+
+    /**
+     * Resumes an in-progress game after an unexpected disconnect (see
+     * {@link ReconnectMessage}) — the Phase 1 equivalent of the scaled
+     * architecture's shard-level reconnect. Sent as a fresh connection's first
+     * message, bypassing LOGIN entirely: identity is established by matching the
+     * claimed username against whoever is actually seated in that room/color, not
+     * by re-checking a password. On success, rebinds the room's existing
+     * {@link ServerSession} to this connection; {@link #startDisconnectCountdown}
+     * notices the old session's replacement connection is open again and cancels.
+     */
+    private void handleReconnect(WebSocket conn, String message) {
+        ReconnectMessage msg = gson.fromJson(message, ReconnectMessage.class);
+        Room room = roomManager.getRoom(msg.getRoomId());
+        if (room == null || !room.isStarted() || room.getEngine().isGameOver()) {
+            sendError(conn, "Cannot reconnect: this game is no longer active");
+            conn.close(1000, "reconnect failed");
+            return;
+        }
+        boolean isWhite = "WHITE".equalsIgnoreCase(msg.getColor());
+        ServerSession existing = isWhite ? room.getWhite() : room.getBlack();
+        if (existing == null || !existing.getUsername().equals(msg.getUsername())) {
+            sendError(conn, "Cannot reconnect: identity mismatch");
+            conn.close(1000, "reconnect failed");
+            return;
+        }
+
+        WebSocket oldConn = existing.getConnection();
+        existing.setConnection(conn);
+        authenticatedSessions.remove(oldConn);
+        authenticatedSessions.put(conn, existing);
+        System.out.println("[Server] " + msg.getUsername() + " reconnected to room " + room.getRoomId());
+
+        String whiteName = room.getWhite() != null ? room.getWhite().getUsername() : "Waiting...";
+        String blackName = room.getBlack() != null ? room.getBlack().getUsername() : "Waiting...";
+        conn.send(gson.toJson(new RoomInfoMessage(room.getRoomId(), existing.getColor(), whiteName, blackName, true)));
+        broadcastRoomBoardState(room);
     }
 
     // ── rooms: create / join ─────────────────────────────────────────────────
@@ -610,6 +650,15 @@ public class ChessWebSocketServer extends WebSocketServer {
             try {
                 for (int i = DISCONNECT_COUNTDOWN_SECONDS; i > 0; i--) {
                     if (!opponent.getConnection().isOpen() || room.getEngine().isGameOver()) {
+                        disconnectCountdowns.remove(room.getRoomId());
+                        return;
+                    }
+                    // handleReconnect rebinds `disconnected`'s connection in place, so this
+                    // becomes true again the moment they successfully rejoin mid-countdown.
+                    if (disconnected.getConnection().isOpen()) {
+                        System.out.println("[Server] " + disconnected.getUsername()
+                                + " reconnected before forfeiting room " + room.getRoomId());
+                        opponent.getConnection().send(gson.toJson(new DisconnectCountdownMessage(0)));
                         disconnectCountdowns.remove(room.getRoomId());
                         return;
                     }

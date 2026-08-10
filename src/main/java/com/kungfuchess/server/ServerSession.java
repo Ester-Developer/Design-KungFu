@@ -15,7 +15,7 @@ public class ServerSession {
 
     public static final String SPECTATOR = "SPECTATOR";
 
-    private final WebSocket connection;
+    private volatile WebSocket connection;
     private final String username;
     private volatile int elo;
     private volatile String color;
@@ -30,6 +30,11 @@ public class ServerSession {
 
     public WebSocket getConnection() {
         return connection;
+    }
+
+    /** Rebinds this session to a new connection after a successful reconnect. */
+    public void setConnection(WebSocket connection) {
+        this.connection = connection;
     }
 
     public String getUsername() {

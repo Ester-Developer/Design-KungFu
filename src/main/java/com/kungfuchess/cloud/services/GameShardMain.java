@@ -19,6 +19,7 @@ import com.kungfuchess.net.DodgeMessage;
 import com.kungfuchess.net.ErrorMessage;
 import com.kungfuchess.net.MoveMessage;
 import com.kungfuchess.net.MoveNotation;
+import com.kungfuchess.net.ReconnectMessage;
 import com.kungfuchess.net.RoomInfoMessage;
 import com.kungfuchess.net.ScreamMessage;
 import com.kungfuchess.net.ShardJoinMessage;
@@ -177,6 +178,7 @@ public class GameShardMain extends WebSocketServer {
             String type = json.has("type") ? json.get("type").getAsString() : "UNKNOWN";
             switch (type) {
                 case "SHARD_JOIN" -> handleShardJoin(conn, message);
+                case "RECONNECT" -> handleReconnect(conn, message);
                 case "MOVE" -> handleMove(conn, message);
                 case "SCREAM" -> handleScream(conn, message);
                 case "DODGE" -> handleDodge(conn, message);
@@ -244,6 +246,43 @@ public class GameShardMain extends WebSocketServer {
         if (room.isStarted()) {
             broadcastRoomBoardState(room);
         }
+    }
+
+    /**
+     * Resumes an in-progress game after an unexpected disconnect (see
+     * {@link ReconnectMessage}). Only accepted if the room is still live and the
+     * claimed username actually matches whoever was seated in that color — this is
+     * the one place a connection can attach to a session it didn't just create via
+     * SHARD_JOIN, so identity has to be checked explicitly. On success, rebinds the
+     * existing {@link ServerSession} to the new connection; {@link #startDisconnectCountdown}
+     * notices the old session's replacement connection is open again and cancels itself.
+     */
+    private void handleReconnect(WebSocket conn, String message) {
+        ReconnectMessage msg = gson.fromJson(message, ReconnectMessage.class);
+        Room room = waitingRooms.get(msg.getRoomId());
+        if (room == null || !room.isStarted() || room.getEngine().isGameOver()) {
+            sendError(conn, "Cannot reconnect: this game is no longer active");
+            conn.close(1000, "reconnect failed");
+            return;
+        }
+        boolean isWhite = "WHITE".equalsIgnoreCase(msg.getColor());
+        ServerSession existing = isWhite ? room.getWhite() : room.getBlack();
+        if (existing == null || !existing.getUsername().equals(msg.getUsername())) {
+            sendError(conn, "Cannot reconnect: identity mismatch");
+            conn.close(1000, "reconnect failed");
+            return;
+        }
+
+        WebSocket oldConn = existing.getConnection();
+        existing.setConnection(conn);
+        sessions.remove(oldConn);
+        sessions.put(conn, existing);
+        System.out.println("[GameShard] " + msg.getUsername() + " reconnected to room " + room.getRoomId());
+
+        String whiteName = room.getWhite() != null ? room.getWhite().getUsername() : "Waiting...";
+        String blackName = room.getBlack() != null ? room.getBlack().getUsername() : "Waiting...";
+        conn.send(gson.toJson(new RoomInfoMessage(room.getRoomId(), existing.getColor(), whiteName, blackName, true)));
+        broadcastRoomBoardState(room);
     }
 
     private Room newRoom(String roomId) {
@@ -451,6 +490,15 @@ public class GameShardMain extends WebSocketServer {
             try {
                 for (int i = DISCONNECT_COUNTDOWN_SECONDS; i > 0; i--) {
                     if (!opponent.getConnection().isOpen() || room.getEngine().isGameOver()) {
+                        disconnectCountdowns.remove(room.getRoomId());
+                        return;
+                    }
+                    // handleReconnect rebinds `disconnected`'s connection in place, so this
+                    // becomes true again the moment they successfully rejoin mid-countdown.
+                    if (disconnected.getConnection().isOpen()) {
+                        System.out.println("[GameShard] " + disconnected.getUsername()
+                                + " reconnected before forfeiting room " + room.getRoomId());
+                        opponent.getConnection().send(gson.toJson(new DisconnectCountdownMessage(0)));
                         disconnectCountdowns.remove(room.getRoomId());
                         return;
                     }

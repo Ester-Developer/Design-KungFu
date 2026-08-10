@@ -150,6 +150,7 @@ public class CloudClientMain {
             System.err.println("[Client] Never got redirected to a shard: " + e.getMessage());
             return false;
         }
+        gatewayClient.markIntentionalClose();
         gatewayClient.closeBlocking();
 
         // Second hop: reconnect to the assigned Game Server Shard.
@@ -160,7 +161,7 @@ public class CloudClientMain {
         });
         client.setOnOpponentJoined(opponentLatch::countDown);
         client.connectBlocking();
-        client.sendShardJoin(redirect.getRoomId(), redirect.getToken(), redirect.getColor());
+        client.sendShardJoin(redirect.getRoomId(), redirect.getToken(), redirect.getColor(), auth.username);
 
         colorLatch.await();
         if (!client.isOpponentPresent()) {
@@ -186,6 +187,7 @@ public class CloudClientMain {
         if (renderer.getFrame() != null) {
             SwingUtilities.invokeLater(() -> renderer.getFrame().dispose());
         }
+        client.markIntentionalClose();
         if (client.isOpen()) client.close();
         return result;
     }
@@ -219,14 +221,29 @@ public class CloudClientMain {
             renderer.getFrame().setGlassPane(overlay);
             overlay.setVisible(true);
 
-            client.setOnOpponentDisconnectedCountdown(secondsLeft ->
-                    SwingUtilities.invokeLater(() -> overlay.showDisconnectCountdown(secondsLeft)));
+            client.setOnOpponentDisconnectedCountdown(secondsLeft -> SwingUtilities.invokeLater(() -> {
+                if (secondsLeft <= 0) {
+                    overlay.hideDisconnectCountdown(); // opponent reconnected before forfeiting
+                } else {
+                    overlay.showDisconnectCountdown(secondsLeft);
+                }
+            }));
             client.setOnGameOver(winnerColor -> SwingUtilities.invokeLater(() -> {
                 overlay.hideDisconnectCountdown();
                 String label = "white".equalsIgnoreCase(winnerColor) ? "White" : "Black";
                 overlay.showGameOver(winnerColor == null ? "Game over."
                         : winnerColor.equalsIgnoreCase(assignedColor) ? "You won! (" + label + ")"
                         : "You lost — " + label + " wins.");
+            }));
+            // Our own connection dropped mid-game — ChessWebSocketClient retries in the
+            // background (same instance, so every callback here stays wired) up to its
+            // retry budget before giving up.
+            client.setOnReconnecting(() -> SwingUtilities.invokeLater(overlay::showReconnecting));
+            client.setOnReconnected(() -> SwingUtilities.invokeLater(overlay::hideDisconnectCountdown));
+            client.setOnReconnectFailed(() -> SwingUtilities.invokeLater(() -> {
+                overlay.hideDisconnectCountdown();
+                overlay.showGameOver("Connection lost.");
+                nextAction.complete(false);
             }));
         }
 

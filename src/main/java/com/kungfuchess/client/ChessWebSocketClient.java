@@ -20,6 +20,7 @@ import com.kungfuchess.net.LoginMessage;
 import com.kungfuchess.net.MoveMessage;
 import com.kungfuchess.net.NoMatchMessage;
 import com.kungfuchess.net.PlayRequestMessage;
+import com.kungfuchess.net.ReconnectMessage;
 import com.kungfuchess.net.RoomCreateMessage;
 import com.kungfuchess.net.RoomErrorMessage;
 import com.kungfuchess.net.RoomInfoMessage;
@@ -69,6 +70,11 @@ public class ChessWebSocketClient extends WebSocketClient {
     private Runnable onNoMatch;
     private Consumer<ShardConnectMessage> onShardConnect;
     private String currentRoomId;
+    private String username;
+    private volatile boolean intentionalClose = false;
+    private Runnable onReconnecting;
+    private Runnable onReconnected;
+    private Runnable onReconnectFailed;
     private java.util.function.IntConsumer onOpponentDisconnectedCountdown;
     private Consumer<String> onGameOver;
     private boolean gameOverFired = false;
@@ -176,6 +182,30 @@ public class ChessWebSocketClient extends WebSocketClient {
         this.onGameOver = callback;
     }
 
+    /** Sets callback fired when an unexpected disconnect starts an auto-reconnect attempt. */
+    public void setOnReconnecting(Runnable callback) {
+        this.onReconnecting = callback;
+    }
+
+    /** Sets callback fired once a dropped connection has been successfully resumed. */
+    public void setOnReconnected(Runnable callback) {
+        this.onReconnected = callback;
+    }
+
+    /** Sets callback fired if every reconnect attempt fails within the retry budget. */
+    public void setOnReconnectFailed(Runnable callback) {
+        this.onReconnectFailed = callback;
+    }
+
+    /**
+     * Marks the next {@code close()}/{@code closeBlocking()} call as deliberate
+     * (Exit, Play Again, or the WS-Gateway-to-shard hop) so {@link #onClose} doesn't
+     * mistake it for a dropped connection and try to auto-reconnect.
+     */
+    public void markIntentionalClose() {
+        this.intentionalClose = true;
+    }
+
     /** @return the ELO reported by the server on the most recent successful login. */
     public int getLastKnownElo() {
         return lastKnownElo;
@@ -204,6 +234,7 @@ public class ChessWebSocketClient extends WebSocketClient {
         assignedColor = null;
         renderer = null;
         soundManager = null;
+        intentionalClose = false;
     }
 
     /** @return {@code true} once both players have joined (opponent is no longer "Waiting..."). */
@@ -815,9 +846,55 @@ public class ChessWebSocketClient extends WebSocketClient {
         }
     }
 
+    /** How long to keep retrying an unexpected disconnect — kept just under the
+     *  server's 20s disconnect-forfeit grace window (see DISCONNECT_COUNTDOWN_SECONDS
+     *  in GameShardMain/ChessWebSocketServer) so a failed attempt is reported to the
+     *  UI before the server would have forfeited anyway. */
+    private static final long RECONNECT_BUDGET_MS = 18_000;
+
     @Override
     public void onClose(int code, String reason, boolean remote) {
         System.out.println("[Client] Connection closed: " + reason);
+        boolean wasIntentional = intentionalClose;
+        intentionalClose = false;
+        if (!wasIntentional && !gameOverFired && currentRoomId != null
+                && assignedColor != null && username != null) {
+            new Thread(this::attemptReconnect, "ws-reconnect").start();
+        }
+    }
+
+    /**
+     * Runs on a background thread after an unexpected mid-game disconnect. Retries
+     * {@link #reconnectBlocking()} (same underlying connection object — a Java-WebSocket
+     * library feature — so every callback/listener already registered on this client
+     * stays valid with zero extra wiring) until either it succeeds and the server
+     * accepts a {@link ReconnectMessage}, or the retry budget runs out.
+     */
+    private void attemptReconnect() {
+        System.out.println("[Client] Connection lost mid-game — attempting to reconnect to room " + currentRoomId);
+        if (onReconnecting != null) onReconnecting.run();
+
+        long deadline = System.currentTimeMillis() + RECONNECT_BUDGET_MS;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                if (reconnectBlocking()) {
+                    send(gson.toJson(new ReconnectMessage(currentRoomId, username, assignedColor)));
+                    System.out.println("[Client] Reconnected — resuming room " + currentRoomId);
+                    if (onReconnected != null) onReconnected.run();
+                    return;
+                }
+            } catch (Exception e) {
+                System.err.println("[Client] Reconnect attempt failed: " + e.getMessage());
+            }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+        System.err.println("[Client] Giving up reconnecting to room " + currentRoomId);
+        if (onReconnectFailed != null) onReconnectFailed.run();
     }
 
     @Override
@@ -891,6 +968,7 @@ public class ChessWebSocketClient extends WebSocketClient {
      * @param password the player's password
      */
     public void sendLogin(String username, String password) {
+        this.username = username;
         LoginMessage msg = new LoginMessage(username, password);
         String json = gson.toJson(msg);
         send(json);
@@ -903,12 +981,20 @@ public class ChessWebSocketClient extends WebSocketClient {
      * for that architecture (auth already happened over REST against the API Gateway).
      */
     public void sendToken(String token, String username, int elo) {
+        this.username = username;
         send(gson.toJson(new TokenMessage(token, username, elo)));
         System.out.println("[Client] Sent token handshake for " + username);
     }
 
-    /** Sends the shard-join handshake after a {@link ShardConnectMessage} redirect. */
-    public void sendShardJoin(String roomId, String token, String color) {
+    /**
+     * Sends the shard-join handshake after a {@link ShardConnectMessage} redirect.
+     *
+     * @param username needed locally (not part of the wire message — the server
+     *                  already knows it from the token) so an unexpected disconnect
+     *                  later can auto-reconnect via {@link ReconnectMessage}.
+     */
+    public void sendShardJoin(String roomId, String token, String color, String username) {
+        this.username = username;
         send(gson.toJson(new com.kungfuchess.net.ShardJoinMessage(roomId, token, color)));
         System.out.println("[Client] Sent shard join for room " + roomId);
     }

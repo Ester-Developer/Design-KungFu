@@ -178,6 +178,7 @@ public class ClientMain {
                 Thread.sleep(100);
             }
         } finally {
+            client.markIntentionalClose();
             if (client.isOpen()) client.close();
             inputThread.interrupt();
             inputThread.join(1000);
@@ -210,6 +211,7 @@ public class ClientMain {
         }
 
         loginWindow.close();
+        client.markIntentionalClose();
         if (client.isOpen()) client.close();
         System.out.println("Client disconnected");
     }
@@ -412,11 +414,26 @@ public class ClientMain {
             renderer.getFrame().setGlassPane(overlay);
             overlay.setVisible(true);
 
-            client.setOnOpponentDisconnectedCountdown(secondsLeft ->
-                    SwingUtilities.invokeLater(() -> overlay.showDisconnectCountdown(secondsLeft)));
+            client.setOnOpponentDisconnectedCountdown(secondsLeft -> SwingUtilities.invokeLater(() -> {
+                if (secondsLeft <= 0) {
+                    overlay.hideDisconnectCountdown(); // opponent reconnected before forfeiting
+                } else {
+                    overlay.showDisconnectCountdown(secondsLeft);
+                }
+            }));
             client.setOnGameOver(winnerColor -> SwingUtilities.invokeLater(() -> {
                 overlay.hideDisconnectCountdown();
                 overlay.showGameOver(gameOverMessage(winnerColor, assignedColor));
+            }));
+            // Our own connection dropped mid-game — ChessWebSocketClient retries in the
+            // background (same instance, so every callback here stays wired) up to its
+            // retry budget before giving up.
+            client.setOnReconnecting(() -> SwingUtilities.invokeLater(overlay::showReconnecting));
+            client.setOnReconnected(() -> SwingUtilities.invokeLater(overlay::hideDisconnectCountdown));
+            client.setOnReconnectFailed(() -> SwingUtilities.invokeLater(() -> {
+                overlay.hideDisconnectCountdown();
+                overlay.showGameOver("Connection lost.");
+                nextAction.complete(false);
             }));
         }
 
